@@ -145,6 +145,20 @@
     color: var(--error);
     border-color: var(--error-border);
   }
+  .msg.rendered { white-space: normal; }
+  .msg p { margin: 0 0 8px; }
+  .msg p:last-child { margin-bottom: 0; }
+  .msg ul, .msg ol { margin: 4px 0 8px; padding-left: 20px; }
+  .msg li { margin-bottom: 4px; }
+  .msg li:last-child { margin-bottom: 0; }
+  .msg strong { font-weight: 700; }
+  .msg code {
+    background: rgba(255, 255, 255, 0.08);
+    padding: 1px 5px;
+    border-radius: 5px;
+    font-size: 0.87em;
+    font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  }
 
   .typing {
     display: inline-flex;
@@ -289,10 +303,64 @@
     return { row, bubble };
   }
 
+  // Minimal, dependency-free markdown for agent replies: **bold**, *italic*/_italic_,
+  // `code`, "- "/"* " bullet lists, "1. " numbered lists, blank-line paragraph breaks.
+  // Escapes HTML first so the agent's own text can never inject markup.
+  function escapeHtml(str) {
+    return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  function renderInline(s) {
+    return s
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/(^|[^*\w])\*([^*]+)\*(?!\*)/g, "$1<em>$2</em>")
+      .replace(/(^|[^_\w])_([^_]+)_(?!_)/g, "$1<em>$2</em>");
+  }
+
+  function renderMarkdown(text) {
+    const lines = escapeHtml(text).split("\n");
+    let html = "";
+    let listType = null;
+
+    function closeList() {
+      if (listType) {
+        html += listType === "ul" ? "</ul>" : "</ol>";
+        listType = null;
+      }
+    }
+
+    for (const raw of lines) {
+      const line = raw.trim();
+      const bullet = line.match(/^[-*]\s+(.*)/);
+      const numbered = line.match(/^\d+\.\s+(.*)/);
+
+      if (bullet) {
+        if (listType !== "ul") { closeList(); html += "<ul>"; listType = "ul"; }
+        html += "<li>" + renderInline(bullet[1]) + "</li>";
+      } else if (numbered) {
+        if (listType !== "ol") { closeList(); html += "<ol>"; listType = "ol"; }
+        html += "<li>" + renderInline(numbered[1]) + "</li>";
+      } else {
+        closeList();
+        if (line) html += "<p>" + renderInline(line) + "</p>";
+      }
+    }
+    closeList();
+    return html;
+  }
+
   function addMessage(text, cls) {
     return addRow(cls === "user" ? "user" : "agent", cls === "user" ? "🧑" : "🤖", (bubble) => {
-      if (cls === "error") bubble.classList.add("error");
-      bubble.textContent = text;
+      if (cls === "error") {
+        bubble.classList.add("error");
+        bubble.textContent = text;
+      } else if (cls === "agent") {
+        bubble.classList.add("rendered");
+        bubble.innerHTML = renderMarkdown(text);
+      } else {
+        bubble.textContent = text;
+      }
     }).row;
   }
 

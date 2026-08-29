@@ -1,7 +1,11 @@
+import logging
+
 from agentkernel.pydanticai import PydanticAIToolBuilder
 from pydantic_ai import Agent
 
 from tool import load_user_profile, save_user_profile, search_opportunities
+
+_log = logging.getLogger("ak.vmp.handoff")
 
 # Google Gemini via the free Google AI Studio tier (GEMINI_API_KEY / GOOGLE_API_KEY env var) —
 # no OpenAI key or card required. gemini-2.5-flash was retired for new API keys (Google's own
@@ -51,7 +55,14 @@ async def hand_off_to_matching_agent(profile_summary: str) -> str:
         .... Causes: c, d. Location: ... ." — the same shape save_user_profile stores, so
         matching_agent can parse it reliably.
     """
-    return str((await matching_agent.run(profile_summary)).output)
+    # This nested call runs matching_agent directly via Pydantic AI, not through Agent
+    # Kernel's AgentService — so it never shows up as "Selected agent: matching_agent" in
+    # the terminal the way profile_agent's own selection does. This log line is the only
+    # visible confirmation that the handoff actually happened.
+    _log.info("Delegating to matching_agent with profile_summary=%r", profile_summary)
+    reply = str((await matching_agent.run(profile_summary)).output)
+    _log.info("matching_agent replied (%d chars)", len(reply))
+    return reply
 
 
 PROFILE_AGENT_INSTRUCTIONS = """
