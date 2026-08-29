@@ -11,5 +11,9 @@ logging:
 # TODO (Phase 3c, memory): add a `knowledgebase:` block once save_user_profile/
 # load_user_profile are backed by a real KnowledgeBase (e.g. chroma).
 
-# TODO (Phase 3e, Slack): add a `slack:` block here when AgentSlackRequestHandler
-# is wired in app.py.
+# `agent` is left unset (defaults to "") so Slack messages route to the first agent
+# registered in agent.py — profile_agent — same entry point as the web frontend.
+# SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET are read directly by slack_bolt from the
+# environment, not from this file — see README.md for where to get them.
+slack:
+  agent_acknowledgement: "Let me look into that for you"

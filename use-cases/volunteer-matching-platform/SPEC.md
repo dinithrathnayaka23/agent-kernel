@@ -52,7 +52,8 @@ A multi-agent solution that connects individuals with suitable volunteer opportu
 - Provide a local CLI entry point (`demo.py`) for testing the agents without needing the web frontend or Slack running.
 - Use `uv` for dependency management.
 - Keep generated dependency exports, deployment packages, local virtual environments, and installed coding-agent skills out of Git.
-- Required environment variable: `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) — get a free key with no card required at https://aistudio.google.com/apikey. Slack testing additionally requires `SLACK_BOT_TOKEN` and `SLACK_SIGNING_SECRET`, plus a tunnel (e.g. pinggy.io) for the local webhook URL.
+- Required environment variable: `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) — get a free key with no card required at https://aistudio.google.com/apikey.
+- `app.py` constructs `AgentSlackRequestHandler` unconditionally alongside the web API handler, so `SLACK_BOT_TOKEN` and `SLACK_SIGNING_SECRET` must also be set (even to placeholder values) for `app.py` to start at all — `slack_bolt` validates the signing secret is non-empty at construction time. `demo.py` (CLI) needs none of the Slack variables. Real end-to-end Slack testing additionally needs a tunnel (e.g. pinggy.io) for the local webhook URL — see README.md.
 
 ## Deployment
 

@@ -1,13 +1,16 @@
-from agentkernel.api import RESTAPI
+from agentkernel.api import RESTAPI, AgentRESTRequestHandler
 from agentkernel.pydanticai import PydanticAIModule
+from agentkernel.slack import AgentSlackRequestHandler
 
 from agent import AGENTS
-
-# TODO (Phase 3e, Member 2): add `from agentkernel.slack import AgentSlackRequestHandler`
-# and pass RESTAPI.run([AgentSlackRequestHandler()]) to serve Slack alongside the web API.
 
 PydanticAIModule(AGENTS)
 
 
 if __name__ == "__main__":
-    RESTAPI.run()
+    # Explicit handler list serves both interfaces together: the web frontend's
+    # POST /api/v1/chat (AgentRESTRequestHandler) and Slack's POST /slack/events
+    # (AgentSlackRequestHandler). RESTAPI.run() with no handlers routes through the
+    # queue pipeline instead (api/http.py's activation rule) — passing handlers here
+    # takes the direct-serve path both integrations need.
+    RESTAPI.run([AgentRESTRequestHandler(), AgentSlackRequestHandler()])
