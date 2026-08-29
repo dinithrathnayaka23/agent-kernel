@@ -3055,6 +3055,15 @@ crypto = [
 ]
 
 [[package]]
+name = "pyreadline3"
+version = "3.5.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b6/6d/f94028646d7bbe6d9d873c47ee7c246f2d29129d253f0d96cb6fcab70733/pyreadline3-3.5.6.tar.gz", hash = "sha256:61e53218b99656091ddb077df9e71f25850e72e030b6183b39c9b7e6e4f4a9bf", size = 100368, upload-time = "2026-05-14T17:55:04.471Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f7/5e/35c856e186b74678c24927847ad9895a51f1bc02a0c6126477a6c6040064/pyreadline3-3.5.6-py3-none-any.whl", hash = "sha256:8449b734232e42a5dcd74048e39b60db2839a4c38cf3ae2bf7707d58b5389c0d", size = 85243, upload-time = "2026-05-14T17:55:03.262Z" },
+]
+
+[[package]]
 name = "pytest"
 version = "9.1.1"
 source = { registry = "https://pypi.org/simple" }
@@ -4333,6 +4342,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "agentkernel", extra = ["api", "openai"] },
+    { name = "pyreadline3", marker = "sys_platform == 'win32'" },
 ]
 
 [package.dev-dependencies]
@@ -4345,7 +4355,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "agentkernel", extras = ["cli", "openai", "api"], specifier = ">=0.8.1" }]
+requires-dist = [
+    { name = "agentkernel", extras = ["cli", "openai", "api"], specifier = ">=0.8.1" },
+    { name = "pyreadline3", marker = "sys_platform == 'win32'", specifier = ">=3.5.0" },
+]
 
 [package.metadata.requires-dev]
 dev = [

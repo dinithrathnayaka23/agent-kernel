@@ -6,6 +6,9 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "agentkernel[cli,openai,api]>=0.8.1",
+    # agentkernel.cli hard-imports the POSIX-only `readline` module; this shim
+    # provides it on Windows so `demo.py` doesn't crash on import there.
+    "pyreadline3>=3.5.0 ; sys_platform == 'win32'",
 ]
 
 [dependency-groups]
