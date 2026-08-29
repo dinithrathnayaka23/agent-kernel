@@ -1,0 +1,15 @@
+# Agent Kernel local development configuration.
+session:
+  type: in_memory
+  cache:
+    size: 256
+
+logging:
+  ak:
+    level: INFO
+
+# TODO (Phase 3c, memory): add a `knowledgebase:` block once save_user_profile/
+# load_user_profile are backed by a real KnowledgeBase (e.g. chroma).
+
+# TODO (Phase 3e, Slack): add a `slack:` block here when AgentSlackRequestHandler
+# is wired in app.py.
