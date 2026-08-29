@@ -8,13 +8,13 @@ Volunteers struggle to find opportunities that actually fit their skills, availa
 
 ## Solution Overview
 
-A multi-agent Agent Kernel solution: a `profile_agent` captures a user's skills, availability, and causes; a `matching_agent` ranks opportunities from a dataset via a tool and returns justified matches. Preferences are remembered across sessions via a knowledge store. Usable through a web chat UI and Slack. See `SPEC.md` for full details.
+A multi-agent Agent Kernel solution (built with Pydantic AI on Google Gemini's free tier): a `profile_agent` captures a user's skills, availability, and causes; a `matching_agent` ranks opportunities from a dataset via a tool and returns justified matches. Preferences are remembered across sessions via a knowledge store. Usable through a web chat UI and Slack. See `SPEC.md` for full details.
 
 ## Setup Instructions
 
 1. Install [uv](https://github.com/astral-sh/uv).
 2. From this directory, run `./build.sh` (creates `.venv`, installs dependencies).
-3. Set the required environment variable: `export OPENAI_API_KEY=sk-...`
+3. Get a free API key (no card required) at https://aistudio.google.com/apikey, then: `export GOOGLE_API_KEY=...`
 4. *(Slack only)* Set `SLACK_BOT_TOKEN` and `SLACK_SIGNING_SECRET` — see `SPEC.md`.
 
 ## How to Run

@@ -8,17 +8,17 @@ A multi-agent solution that connects individuals with suitable volunteer opportu
 
 ### Agents
 
-- Build two Agent Kernel agents using the OpenAI Agents SDK: `profile_agent` (entry point) and `matching_agent`.
+- Build two Agent Kernel agents using **Pydantic AI**, pointed at **Google Gemini** (`google:gemini-2.5-flash`, free tier via Google AI Studio — `GOOGLE_API_KEY` or `GEMINI_API_KEY` env var, no card required): `profile_agent` (entry point) and `matching_agent`.
 - `profile_agent`:
   - On the first message of a conversation, calls `load_user_profile` to check whether this user has a stored profile.
   - If a profile exists, greets the user by referencing what's already known and asks only for anything missing or that they want to change, instead of re-asking everything.
   - If no profile exists, conversationally collects: skills (list), availability (days/hours or a free-text description), causes of interest (e.g. environment, education, health — ideally SDG-aligned), and a location or remote preference.
-  - Once the required fields are gathered, calls `save_user_profile`, then hands off to `matching_agent`.
+  - Once the required fields are gathered, calls `save_user_profile`, then calls `hand_off_to_matching_agent` with a summary of the captured profile.
 - `matching_agent`:
   - Calls `search_opportunities` with the current profile's skills, causes, location, and remote preference.
   - Returns the top 3–5 ranked matches, each with a one-line justification tying the match to a specific skill or cause overlap.
   - If no opportunities score above a minimum relevance threshold, says so plainly rather than forcing weak matches.
-- Wire the handoff as `profile_agent.handoffs=[matching_agent]`; register both via `OpenAIModule([profile_agent, matching_agent])`.
+- **Pydantic AI has no `handoffs=` primitive** (unlike the OpenAI Agents SDK) — multi-agent routing is delegation-via-tool: `profile_agent` is given a plain async tool function, `hand_off_to_matching_agent(profile_summary)`, that runs `matching_agent.run(...)` internally and returns its output. Register both agents via `PydanticAIModule([profile_agent, matching_agent])`.
 
 ### Tool
 
@@ -52,7 +52,7 @@ A multi-agent solution that connects individuals with suitable volunteer opportu
 - Provide a local CLI entry point (`demo.py`) for testing the agents without needing the web frontend or Slack running.
 - Use `uv` for dependency management.
 - Keep generated dependency exports, deployment packages, local virtual environments, and installed coding-agent skills out of Git.
-- Required environment variable: `OPENAI_API_KEY`. Slack testing additionally requires `SLACK_BOT_TOKEN` and `SLACK_SIGNING_SECRET`, plus a tunnel (e.g. pinggy.io) for the local webhook URL.
+- Required environment variable: `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) — get a free key with no card required at https://aistudio.google.com/apikey. Slack testing additionally requires `SLACK_BOT_TOKEN` and `SLACK_SIGNING_SECRET`, plus a tunnel (e.g. pinggy.io) for the local webhook URL.
 
 ## Deployment
 

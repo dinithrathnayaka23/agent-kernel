@@ -1,9 +1,9 @@
 from agentkernel.cli import CLI
-from agentkernel.openai import OpenAIModule
+from agentkernel.pydanticai import PydanticAIModule
 
 from agent import AGENTS
 
-OpenAIModule(AGENTS)
+PydanticAIModule(AGENTS)
 
 
 if __name__ == "__main__":
