@@ -41,12 +41,20 @@ A multi-agent Agent Kernel solution (built with Pydantic AI on Google Gemini's f
   ```
   Then open `http://localhost:5500` in a browser. The page talks to the API at `http://localhost:8000` (edit the `API_BASE` constant at the top of `static/index.html`'s `<script>` if you change the API port).
 
+## Testing
+
+```bash
+uv run pytest
+```
+
+`demo_test.py` is a smoke test (skipped automatically if `GOOGLE_API_KEY`/`GEMINI_API_KEY` isn't set): it only checks that `profile_agent` returns a real, non-empty, error-free reply — it deliberately doesn't assert exact wording, since the agents are still placeholders (Phase 3a–3c). Once Member 1's real instructions land, this test keeps passing unchanged and still catches wiring regressions; add content-specific tests alongside it as real behavior ships.
+
 ## Status
 
 - [x] Phase 1 — `SPEC.md`
 - [x] Phase 2 — scaffold
 - [x] Phase 3d — web frontend
-- [x] Phase 3e — Slack (this stage) — code wired and verified (`/slack/events` live, correctly rejects unsigned requests); real workspace/tunnel setup is on you, see above
+- [x] Phase 3e — Slack — code wired and verified (`/slack/events` live, correctly rejects unsigned requests); real workspace/tunnel setup is on you, see above
+- [x] Phase 3f — test harness (this stage) — `test-config.yaml` + `demo_test.py` smoke test in place; README/AGENTS.md finalize in Phase 6 once Member 1's agents are real
 - [ ] Phase 3a–3c — agents, tool, memory (Member 1)
-- [ ] Phase 3f — tests/docs (Member 2)
 - [ ] Phase 4–6 — integration, testing, docs, demo video, submission
