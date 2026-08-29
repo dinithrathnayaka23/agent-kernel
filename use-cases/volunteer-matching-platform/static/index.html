@@ -148,10 +148,14 @@
   const API_BASE = "http://localhost:8000";
   const CHAT_ENDPOINT = API_BASE + "/api/v1/chat";
 
-  // Stable per-browser id — persists across visits so the memory feature
-  // (save_user_profile/load_user_profile) can recognize a returning user.
-  function getOrCreateUserId() {
-    const key = "vmp_user_id";
+  // Stable per-browser id, persisted across visits. The installed Agent Kernel version
+  // (0.8.1) doesn't propagate a request's user_id down to tools, so the memory feature
+  // (save_user_profile/load_user_profile) actually keys off the Agent Kernel session_id
+  // instead — see tool.py's _current_user_id() for the full explanation. That means this
+  // id must be REUSED across page loads, not regenerated each time, for "remembered across
+  // visits" to work here. Sent as both session_id and user_id for good measure.
+  function getOrCreatePersistedId() {
+    const key = "vmp_persisted_id";
     let id = localStorage.getItem(key);
     if (!id) {
       id = crypto.randomUUID();
@@ -160,10 +164,8 @@
     return id;
   }
 
-  // Fresh per page-load — keeps one conversation's multi-turn context together
-  // without tying memory to it (memory is keyed by user_id, not session_id).
-  const sessionId = crypto.randomUUID();
-  const userId = getOrCreateUserId();
+  const sessionId = getOrCreatePersistedId();
+  const userId = sessionId;
 
   document.getElementById("identity").textContent =
     "Your ID: " + userId.slice(0, 8) + "…  (persists across visits — reload the page to test returning-user memory)";

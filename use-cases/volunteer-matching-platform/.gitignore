@@ -1,5 +1,6 @@
 .venv/
 __pycache__/
+chroma_db/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/

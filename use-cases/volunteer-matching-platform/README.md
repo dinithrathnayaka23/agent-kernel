@@ -47,14 +47,21 @@ A multi-agent Agent Kernel solution (built with Pydantic AI on Google Gemini's f
 uv run pytest
 ```
 
-`demo_test.py` is a smoke test (skipped automatically if `GOOGLE_API_KEY`/`GEMINI_API_KEY` isn't set): it only checks that `profile_agent` returns a real, non-empty, error-free reply — it deliberately doesn't assert exact wording, since the agents are still placeholders (Phase 3a–3c). Once Member 1's real instructions land, this test keeps passing unchanged and still catches wiring regressions; add content-specific tests alongside it as real behavior ships.
+- `tool_test.py`: unit tests for `search_opportunities`' ranking logic — no agent, session, or LLM call involved, always runs.
+- `demo_test.py`: a live CLI smoke test (skipped automatically if `GOOGLE_API_KEY`/`GEMINI_API_KEY` isn't set) — checks that `profile_agent` returns a real, non-empty, error-free reply, without asserting exact wording (LLM phrasing varies).
+
+Note: the very first call to `save_user_profile`/`load_user_profile` on a machine downloads a small (~80 MB) local embedding model for the memory store — one-time, needs internet, no API key.
 
 ## Status
 
 - [x] Phase 1 — `SPEC.md`
 - [x] Phase 2 — scaffold
+- [x] Phase 3a — agents (`profile_agent` → `matching_agent` via delegation-via-tool)
+- [x] Phase 3b — dataset (36 opportunities) + `search_opportunities` (8/8 unit tests passing)
+- [x] Phase 3c — memory (`save_user_profile`/`load_user_profile` via `ChromaManager`; identity resolution verified for both the web frontend and Slack — see `SPEC.md`'s Memory/Knowledge section)
 - [x] Phase 3d — web frontend
 - [x] Phase 3e — Slack — code wired and verified (`/slack/events` live, correctly rejects unsigned requests); real workspace/tunnel setup is on you, see above
-- [x] Phase 3f — test harness (this stage) — `test-config.yaml` + `demo_test.py` smoke test in place; README/AGENTS.md finalize in Phase 6 once Member 1's agents are real
-- [ ] Phase 3a–3c — agents, tool, memory (Member 1)
+- [x] Phase 3f — test harness
 - [ ] Phase 4–6 — integration, testing, docs, demo video, submission
+
+Everything above has been verified against Google's real Gemini API (with a placeholder key, confirming requests reach the provider correctly) and against manually-simulated web/Slack request contexts (confirming memory recall across both a persisted `session_id` and separate Slack threads) — but **no one has yet run this end-to-end with a real `GOOGLE_API_KEY` having an actual conversation.** Do that next before considering Phase 3 done.

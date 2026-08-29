@@ -8,7 +8,7 @@ A multi-agent solution that connects individuals with suitable volunteer opportu
 
 ### Agents
 
-- Build two Agent Kernel agents using **Pydantic AI**, pointed at **Google Gemini** (`google:gemini-2.5-flash`, free tier via Google AI Studio — `GOOGLE_API_KEY` or `GEMINI_API_KEY` env var, no card required): `profile_agent` (entry point) and `matching_agent`.
+- Build two Agent Kernel agents using **Pydantic AI**, pointed at **Google Gemini** (`google:gemini-3.6-flash`, free tier via Google AI Studio — `GOOGLE_API_KEY` or `GEMINI_API_KEY` env var, no card required; verify this model name is still current if this is picked back up much later — Google retires older flash models on a schedule, and `gemini-2.5-flash` was already retired for new keys by the time this was written): `profile_agent` (entry point) and `matching_agent`.
 - `profile_agent`:
   - On the first message of a conversation, calls `load_user_profile` to check whether this user has a stored profile.
   - If a profile exists, greets the user by referencing what's already known and asks only for anything missing or that they want to change, instead of re-asking everything.
@@ -36,15 +36,15 @@ A multi-agent solution that connects individuals with suitable volunteer opportu
 
 ### Memory / Knowledge
 
-- Implement `save_user_profile(user_id: str, skills: list[str], availability: str, causes: list[str], location: str) -> str` and `load_user_profile(user_id: str) -> dict | None` in `tool.py`, backed by an Agent Kernel `KnowledgeBase` (`agentkernel.knowledgebase`) rather than plain session cache.
-- Keyed explicitly by a stable `user_id` passed into the tool call — not by the Agent Kernel session ID — so a profile persists across separate conversations/sessions for the same user.
-  - Web frontend: `user_id` is a UUID generated client-side on first visit and persisted in `localStorage`.
-  - Slack: `user_id` is the Slack user ID from the incoming event; verify during implementation exactly how `AgentSlackRequestHandler` exposes this to a tool call before wiring it.
+- Implement `save_user_profile(skills: list[str], availability: str, causes: list[str], location: str) -> str` and `load_user_profile() -> dict | None` in `tool.py`, backed by an Agent Kernel `KnowledgeBase` (`ChromaManager` from `agentkernel.knowledgebase.chroma`) rather than plain session cache. Neither takes an explicit user id — the identity to key on is resolved internally by `_current_user_id()`, not supplied by the LLM (avoids relying on the model to correctly echo back an id it was never actually told in conversation).
+- **Verified against the actual installed dependency (`agentkernel==0.8.1`), not assumed:** an earlier draft of this design planned to read `user_id` from an "acting-user" propagation mechanism (`ACTING_USER_CACHE_KEY`) — that exists only in the monorepo's unreleased `develop` source, not in 0.8.1 (confirmed directly: zero references to `acting_user` anywhere in the installed package, and `RequestBuilder._attach_additional_context` explicitly excludes `user_id` as a "known field" it won't forward). The real, verified mechanism `_current_user_id()` uses instead:
+  - **Slack:** `AgentSlackRequestHandler` attaches the raw Slack event as `AgentRequestAny(name="body", content=body)` on every request; `body["user"]` is the Slack user id, which stays constant across separate conversations/threads (unlike `session_id`, which is the Slack thread timestamp and changes per conversation) — read directly from there.
+  - **Web frontend / CLI:** falls back to the Agent Kernel `session.id`. This only gives cross-visit memory if the caller *reuses* the same `session_id` across visits, so the web frontend deliberately persists it in `localStorage` instead of generating a fresh one per page load (see `static/index.html`). The CLI gets a fresh `session_id` per `demo.py` run, so CLI memory only persists within one run — acceptable, since the CLI is for local dev/testing, not the persistence demo.
 - Known, accepted limitation: identity is per-channel. The same person using both the web UI and Slack has two independent profiles — there is no cross-channel account linking in this version.
 
 ### User Interfaces
 
-- **Web frontend (primary):** a static HTML/JS chat page that calls Agent Kernel's REST chat endpoint (`POST /api/v1/chat`), sending the browser-generated `user_id` with every request, and rendering the conversation as a chat thread. Enable CORS on the REST API if the frontend is served from a different origin than the API.
+- **Web frontend (primary):** a static HTML/JS chat page that calls Agent Kernel's REST chat endpoint (`POST /api/v1/chat`), sending one id, persisted in `localStorage` across visits, as both `session_id` and `user_id` — see the Memory/Knowledge note above for why `session_id` is the one that actually matters. Renders the conversation as a chat thread. Enable CORS on the REST API if the frontend is served from a different origin than the API (already permissive by default in `agentkernel.api.http`).
 - **Slack (secondary):** wire `AgentSlackRequestHandler` alongside the web API so both interfaces are served from the same `RESTAPI.run([...])` call, front the same two agents, and share the same knowledge store.
 
 ## Local Development
@@ -53,6 +53,7 @@ A multi-agent solution that connects individuals with suitable volunteer opportu
 - Use `uv` for dependency management.
 - Keep generated dependency exports, deployment packages, local virtual environments, and installed coding-agent skills out of Git.
 - Required environment variable: `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) — get a free key with no card required at https://aistudio.google.com/apikey.
+- First call to `save_user_profile`/`load_user_profile` on a machine downloads a small (~80 MB) local embedding model for the Chroma knowledge store (cached under `~/.cache/chroma/`, one-time, no API key involved) — needs internet access once, not per-profile.
 - `app.py` constructs `AgentSlackRequestHandler` unconditionally alongside the web API handler, so `SLACK_BOT_TOKEN` and `SLACK_SIGNING_SECRET` must also be set (even to placeholder values) for `app.py` to start at all — `slack_bolt` validates the signing secret is non-empty at construction time. `demo.py` (CLI) needs none of the Slack variables. Real end-to-end Slack testing additionally needs a tunnel (e.g. pinggy.io) for the local webhook URL — see README.md.
 
 ## Deployment
