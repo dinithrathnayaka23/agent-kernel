@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Volunteer Matching Platform</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #f5f6f8;
+    --panel: #ffffff;
+    --border: #e2e5ea;
+    --text: #1c1f26;
+    --muted: #6b7280;
+    --accent: #2f6f4f;
+    --accent-fg: #ffffff;
+    --agent-bubble: #eef1f5;
+    --error: #b3261e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex;
+    justify-content: center;
+    min-height: 100vh;
+    padding: 24px 12px;
+  }
+  .app {
+    width: 100%;
+    max-width: 640px;
+    display: flex;
+    flex-direction: column;
+    height: calc(100vh - 48px);
+  }
+  header {
+    padding: 8px 4px 16px;
+  }
+  header h1 {
+    font-size: 1.25rem;
+    margin: 0 0 4px;
+  }
+  header p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+  #chat {
+    flex: 1;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .msg {
+    max-width: 80%;
+    padding: 10px 14px;
+    border-radius: 14px;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    font-size: 0.95rem;
+  }
+  .msg.user {
+    align-self: flex-end;
+    background: var(--accent);
+    color: var(--accent-fg);
+    border-bottom-right-radius: 4px;
+  }
+  .msg.agent {
+    align-self: flex-start;
+    background: var(--agent-bubble);
+    color: var(--text);
+    border-bottom-left-radius: 4px;
+  }
+  .msg.error {
+    align-self: flex-start;
+    background: #fbeceb;
+    color: var(--error);
+    border: 1px solid #f2c6c3;
+  }
+  .msg.pending {
+    align-self: flex-start;
+    background: var(--agent-bubble);
+    color: var(--muted);
+    font-style: italic;
+  }
+  form {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+  }
+  input[type="text"] {
+    flex: 1;
+    padding: 12px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    font-size: 0.95rem;
+    background: var(--panel);
+    color: var(--text);
+  }
+  input[type="text"]:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  button {
+    padding: 0 20px;
+    border: none;
+    border-radius: 10px;
+    background: var(--accent);
+    color: var(--accent-fg);
+    font-size: 0.95rem;
+    cursor: pointer;
+  }
+  button:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  footer {
+    margin-top: 10px;
+    color: var(--muted);
+    font-size: 0.75rem;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>Volunteer Matching Platform</h1>
+      <p>Tell it your skills, availability, and causes you care about.</p>
+    </header>
+    <div id="chat"></div>
+    <form id="composer">
+      <input id="prompt" type="text" placeholder="Type a message…" autocomplete="off" autofocus />
+      <button id="send" type="submit">Send</button>
+    </form>
+    <footer id="identity"></footer>
+  </div>
+
+<script>
+  // Point this at wherever app.py's RESTAPI.run() is listening.
+  const API_BASE = "http://localhost:8000";
+  const CHAT_ENDPOINT = API_BASE + "/api/v1/chat";
+
+  // Stable per-browser id — persists across visits so the memory feature
+  // (save_user_profile/load_user_profile) can recognize a returning user.
+  function getOrCreateUserId() {
+    const key = "vmp_user_id";
+    let id = localStorage.getItem(key);
+    if (!id) {
+      id = crypto.randomUUID();
+      localStorage.setItem(key, id);
+    }
+    return id;
+  }
+
+  // Fresh per page-load — keeps one conversation's multi-turn context together
+  // without tying memory to it (memory is keyed by user_id, not session_id).
+  const sessionId = crypto.randomUUID();
+  const userId = getOrCreateUserId();
+
+  document.getElementById("identity").textContent =
+    "Your ID: " + userId.slice(0, 8) + "…  (persists across visits — reload the page to test returning-user memory)";
+
+  const chatEl = document.getElementById("chat");
+  const formEl = document.getElementById("composer");
+  const inputEl = document.getElementById("prompt");
+  const sendBtn = document.getElementById("send");
+
+  function addMessage(text, cls) {
+    const div = document.createElement("div");
+    div.className = "msg " + cls;
+    div.textContent = text;
+    chatEl.appendChild(div);
+    chatEl.scrollTop = chatEl.scrollHeight;
+    return div;
+  }
+
+  async function sendMessage(prompt) {
+    addMessage(prompt, "user");
+    const pending = addMessage("…", "pending");
+    inputEl.value = "";
+    inputEl.disabled = true;
+    sendBtn.disabled = true;
+
+    try {
+      const res = await fetch(CHAT_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt, session_id: sessionId, user_id: userId }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      pending.remove();
+
+      if (!res.ok) {
+        const detail = (data && (data.detail || data.error)) || res.statusText;
+        addMessage("Error: " + JSON.stringify(detail), "error");
+        return;
+      }
+
+      addMessage(data.result ?? "(empty response)", "agent");
+    } catch (err) {
+      pending.remove();
+      addMessage(
+        "Could not reach the agent at " + API_BASE + ". Is `uv run python app.py` running? (" + err.message + ")",
+        "error"
+      );
+    } finally {
+      inputEl.disabled = false;
+      sendBtn.disabled = false;
+      inputEl.focus();
+    }
+  }
+
+  formEl.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const text = inputEl.value.trim();
+    if (text) sendMessage(text);
+  });
+</script>
+</body>
+</html>
