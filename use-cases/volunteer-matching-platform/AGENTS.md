@@ -10,8 +10,8 @@ what to watch out for" companion, written after implementation, not before it.
 agent.py          profile_agent, matching_agent, the delegation-via-tool handoff between them
 tool.py           search_opportunities, save_user_profile, load_user_profile, _current_user_id
 data/opportunities.json   36 fictional volunteer opportunities the matching tool ranks against
-demo.py           CLI entrypoint (agentkernel.cli.CLI) — no Slack env vars needed
-app.py            REST API entrypoint, serves the web frontend's API and Slack together
+demo.py           CLI entrypoint (agentkernel.cli.CLI) — no Slack/Telegram env vars needed
+app.py            REST API entrypoint, serves the web frontend's API, Slack, and Telegram together
 static/index.html Single-file web chat UI — the primary, confirmed-working user interface
 tool_test.py      Unit tests for search_opportunities — no agent/session/LLM involved
 demo_test.py      Live CLI smoke test — skipped without GOOGLE_API_KEY/GEMINI_API_KEY
@@ -64,10 +64,32 @@ base `KnowledgeBase.read()`/`write()` interface only exposes semantic query, not
 Persisted to `./chroma_db/` (gitignored). First call on a machine downloads a small local
 embedding model (one-time, no API key, needs internet).
 
+## Telegram: confirmed working
+
+`app.py` wires `AgentTelegramRequestHandler` the same way as Slack — constructed unconditionally,
+so `AK_TELEGRAM__BOT_TOKEN` must be non-empty for `app.py` to start (raises `ValueError`
+otherwise). Verified via a simulated webhook POST to `/telegram/webhook` with a realistic
+Telegram update payload (no real bot needed for this check): it correctly selected
+`profile_agent`, created a session keyed by the Telegram `chat_id`, ran the agent, and attempted
+to reply via Telegram's real API — failing only with a genuine `401 Unauthorized` from Telegram
+itself because the token was a placeholder, the same class of "everything's wired, just needs a
+real credential" signal as the Gemini and Slack checks.
+
+Two things worth knowing if you touch this:
+- **No identity special-casing needed.** Telegram's `session_id` is the `chat_id`
+  (`telegram_chat.py`'s `_process_agent_message`), which is already stable across separate
+  conversations with the same user — `_current_user_id()`'s plain `session.id` fallback handles
+  it correctly without needing a Slack-style side-channel extraction.
+- **The webhook is not auto-registered**, despite `agentkernel`'s own Telegram README claiming
+  otherwise ("automatically set when your server starts") — grepped the installed
+  `telegram_chat.py` directly and confirmed there's no `setWebhook` call anywhere in it. Register
+  it manually with `curl "https://api.telegram.org/bot<TOKEN>/setWebhook?url=<public-url>/telegram/webhook"`
+  every time the public tunnel URL changes.
+
 ## Slack: implemented, not live-confirmed
 
-`app.py` wires `AgentSlackRequestHandler` alongside the web API unconditionally — both handlers
-are constructed in one `RESTAPI.run([AgentRESTRequestHandler(), AgentSlackRequestHandler()])`
+`app.py` wires `AgentSlackRequestHandler` alongside the web API unconditionally — handlers
+are constructed in one `RESTAPI.run([AgentRESTRequestHandler(), AgentSlackRequestHandler(), AgentTelegramRequestHandler()])`
 call, so `SLACK_BOT_TOKEN`/`SLACK_SIGNING_SECRET` must be set (even to placeholders) for `app.py`
 to start at all.
 
