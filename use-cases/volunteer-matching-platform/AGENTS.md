@@ -69,12 +69,21 @@ embedding model (one-time, no API key, needs internet).
 `app.py` wires `AgentSlackRequestHandler` alongside the web API unconditionally — both handlers
 are constructed in one `RESTAPI.run([AgentRESTRequestHandler(), AgentSlackRequestHandler()])`
 call, so `SLACK_BOT_TOKEN`/`SLACK_SIGNING_SECRET` must be set (even to placeholders) for `app.py`
-to start at all. Everything checkable without live Slack traffic was verified: the route exists,
-correctly rejects unsigned requests, and the OAuth scopes/event subscriptions were confirmed
-correctly configured in the Slack admin UI. Live webhook delivery was never confirmed working in
-practice — see `README.md`'s Known Limitations for what was tried. If picking this back up, a
-fresh Slack app (rather than the one already fought with) may be the fastest path to ruling out
-accumulated configuration drift.
+to start at all.
+
+Live webhook delivery was never confirmed working, despite ruling out everything checkable:
+route live and correctly rejects unsigned requests; OAuth scopes and event subscriptions
+confirmed correctly configured and the app reinstalled in the Slack admin UI; App Home's
+messages tab enabled (off by default, blocks DMs otherwise); the public tunnel confirmed
+genuinely reachable from an independent client (not just curl from the same machine) — tried
+across two tunnel providers (Pinggy, then ngrok with a stable claimed domain) to rule out a
+tunnel-specific problem. The consistent result: Slack's one-time URL-verification handshake
+(`type: url_verification`) reached the server correctly every time, on both tunnels, but a real
+`message` event never did — not once. That asymmetry (verification works, live delivery doesn't,
+across two different endpoints) points to something on Slack's account/workspace side that isn't
+exposed by the app-configuration screens, not a missed setup step. If picking this back up, a
+completely fresh Slack app (new App ID, not reinstalling the existing one) is the next thing to
+try, on the chance something is stuck to this specific app's id rather than its configuration.
 
 ## Running things
 
