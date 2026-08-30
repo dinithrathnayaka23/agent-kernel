@@ -68,12 +68,11 @@ embedding model (one-time, no API key, needs internet).
 
 `app.py` wires `AgentTelegramRequestHandler` the same way as Slack — constructed unconditionally,
 so `AK_TELEGRAM__BOT_TOKEN` must be non-empty for `app.py` to start (raises `ValueError`
-otherwise). Verified via a simulated webhook POST to `/telegram/webhook` with a realistic
-Telegram update payload (no real bot needed for this check): it correctly selected
-`profile_agent`, created a session keyed by the Telegram `chat_id`, ran the agent, and attempted
-to reply via Telegram's real API — failing only with a genuine `401 Unauthorized` from Telegram
-itself because the token was a placeholder, the same class of "everything's wired, just needs a
-real credential" signal as the Gemini and Slack checks.
+otherwise). First verified via a simulated webhook POST to `/telegram/webhook` with a realistic
+payload (no real bot needed for that check), then confirmed for real with an actual Telegram
+bot, a real ngrok tunnel, and a live conversation: `Selected agent: profile_agent` → the full
+profile captured in one message → `Delegating to matching_agent with profile_summary=...` → a
+complete ranked-match reply delivered back through real Telegram servers.
 
 Two things worth knowing if you touch this:
 - **No identity special-casing needed.** Telegram's `session_id` is the `chat_id`

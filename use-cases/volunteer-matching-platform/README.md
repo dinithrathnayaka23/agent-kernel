@@ -15,7 +15,7 @@ Two Agent Kernel agents, built with **Pydantic AI** on **Google Gemini** (free t
 
 **Memory**: profiles are saved to a `ChromaManager` knowledge store, keyed by a stable identity per channel, so a returning user is recognized in a later, separate conversation instead of starting over every time.
 
-**Interfaces**: a web chat UI (`static/index.html`) is the primary, fully working way to use this — talks to Agent Kernel's REST API. Telegram is also wired and confirmed working. Slack is implemented too, but live delivery was never confirmed despite a thorough investigation; see [Known Limitations](#known-limitations).
+**Interfaces**: a web chat UI (`static/index.html`) and a **Telegram bot** are both fully working — a real conversation over Telegram correctly captured a profile, handed off to matching, and returned ranked results. Slack is implemented too, but live delivery was never confirmed despite a thorough investigation; see [Known Limitations](#known-limitations).
 
 Full technical design, including two mid-implementation corrections made after verifying against the actual installed Agent Kernel version, is in [`SPEC.md`](SPEC.md).
 
@@ -102,7 +102,7 @@ The code is fully wired the same way as Telegram. If you want to try it:
 - [x] Phase 3c — memory (`save_user_profile`/`load_user_profile` via `ChromaManager`)
 - [x] Phase 3d — web frontend — **confirmed working with a real conversation and a real Gemini key**
 - [x] Phase 3e — Slack — code correct and independently verified; live webhook not confirmed (see Known Limitations)
-- [x] Phase 3g — Telegram — **confirmed working end-to-end via a simulated webhook payload** (real message → agent selected → reply generated → real 401 from Telegram's API on the placeholder token, i.e. everything short of a real bot token is verified)
+- [x] Phase 3g — Telegram — **confirmed fully working with a real bot and a real conversation**: `Selected agent: profile_agent` → profile captured in one message → `Delegating to matching_agent with profile_summary='Skills: coding, teaching. Availability: weekends. Causes: education. Location: Colombo.'` → a full ranked-match reply, all over real Telegram servers
 - [x] Phase 3f — test harness
 - [x] Phase 5 — fresh-clone acceptance test: cloned the branch into a throwaway directory, followed only this README from scratch — `build.sh`, `pytest` (8 passed, 1 correctly skipped without a key), and `app.py` all worked exactly as documented, including a real conversation reaching Gemini
 - [x] Phase 6a — `AGENTS.md` added
