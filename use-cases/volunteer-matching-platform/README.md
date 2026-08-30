@@ -84,5 +84,6 @@ The code is fully wired: `app.py` serves `AgentSlackRequestHandler` alongside th
 - [x] Phase 3d — web frontend — **confirmed working with a real conversation and a real Gemini key**
 - [x] Phase 3e — Slack — code correct and independently verified; live webhook not confirmed (see Known Limitations)
 - [x] Phase 3f — test harness
-- [ ] Phase 5 — fresh-clone acceptance test
-- [ ] Phase 6 — `AGENTS.md`, demo video, submission
+- [x] Phase 5 — fresh-clone acceptance test: cloned the branch into a throwaway directory, followed only this README from scratch — `build.sh`, `pytest` (8 passed, 1 correctly skipped without a key), and `app.py` all worked exactly as documented, including a real conversation reaching Gemini
+- [x] Phase 6a — `AGENTS.md` added
+- [ ] Phase 6b — demo video, final submission
