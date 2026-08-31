@@ -12,6 +12,7 @@ tool.py           search_opportunities, save_user_profile, load_user_profile, _c
 data/opportunities.json   36 fictional volunteer opportunities the matching tool ranks against
 demo.py           CLI entrypoint (agentkernel.cli.CLI) — no Slack/Telegram env vars needed
 app.py            REST API entrypoint, serves the web frontend's API, Slack, and Telegram together
+telegram_handler.py  FormattedTelegramRequestHandler — renders markdown as real Telegram HTML
 static/index.html Single-file web chat UI — the primary, confirmed-working user interface
 tool_test.py      Unit tests for search_opportunities — no agent/session/LLM involved
 demo_test.py      Live CLI smoke test — skipped without GOOGLE_API_KEY/GEMINI_API_KEY
