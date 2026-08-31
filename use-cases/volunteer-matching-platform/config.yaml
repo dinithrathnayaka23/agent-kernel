@@ -8,12 +8,8 @@ logging:
   ak:
     level: INFO
 
-# TODO (Phase 3c, memory): add a `knowledgebase:` block once save_user_profile/
-# load_user_profile are backed by a real KnowledgeBase (e.g. chroma).
-
-# `agent` is left unset (defaults to "") so Slack messages route to the first agent
+# `agent` is left unset (defaults to "") so Telegram messages route to the first agent
 # registered in agent.py — profile_agent — same entry point as the web frontend.
-# SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET are read directly by slack_bolt from the
-# environment, not from this file — see README.md for where to get them.
-slack:
-  agent_acknowledgement: "Let me look into that for you"
+# AK_TELEGRAM__BOT_TOKEN is read via AKConfig's env var convention, not set here —
+# see README.md for where to get it. Slack was attempted and dropped; see README.md's
+# Known Limitations and AGENTS.md for what was tried.
