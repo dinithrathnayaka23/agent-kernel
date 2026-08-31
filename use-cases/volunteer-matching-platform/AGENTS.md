@@ -10,8 +10,9 @@ what to watch out for" companion, written after implementation, not before it.
 agent.py          profile_agent, matching_agent, the delegation-via-tool handoff between them
 tool.py           search_opportunities, save_user_profile, load_user_profile, _current_user_id
 data/opportunities.json   36 fictional volunteer opportunities the matching tool ranks against
-demo.py           CLI entrypoint (agentkernel.cli.CLI) — no Slack env vars needed
-app.py            REST API entrypoint, serves the web frontend's API and Slack together
+demo.py           CLI entrypoint (agentkernel.cli.CLI) — no Slack/Telegram env vars needed
+app.py            REST API entrypoint, serves the web frontend's API, Slack, and Telegram together
+telegram_handler.py  FormattedTelegramRequestHandler — renders markdown as real Telegram HTML
 static/index.html Single-file web chat UI — the primary, confirmed-working user interface
 tool_test.py      Unit tests for search_opportunities — no agent/session/LLM involved
 demo_test.py      Live CLI smoke test — skipped without GOOGLE_API_KEY/GEMINI_API_KEY
@@ -64,17 +65,47 @@ base `KnowledgeBase.read()`/`write()` interface only exposes semantic query, not
 Persisted to `./chroma_db/` (gitignored). First call on a machine downloads a small local
 embedding model (one-time, no API key, needs internet).
 
+## Telegram: confirmed working
+
+`app.py` wires `AgentTelegramRequestHandler` the same way as Slack — constructed unconditionally,
+so `AK_TELEGRAM__BOT_TOKEN` must be non-empty for `app.py` to start (raises `ValueError`
+otherwise). First verified via a simulated webhook POST to `/telegram/webhook` with a realistic
+payload (no real bot needed for that check), then confirmed for real with an actual Telegram
+bot, a real ngrok tunnel, and a live conversation: `Selected agent: profile_agent` → the full
+profile captured in one message → `Delegating to matching_agent with profile_summary=...` → a
+complete ranked-match reply delivered back through real Telegram servers.
+
+Two things worth knowing if you touch this:
+- **No identity special-casing needed.** Telegram's `session_id` is the `chat_id`
+  (`telegram_chat.py`'s `_process_agent_message`), which is already stable across separate
+  conversations with the same user — `_current_user_id()`'s plain `session.id` fallback handles
+  it correctly without needing a Slack-style side-channel extraction.
+- **The webhook is not auto-registered**, despite `agentkernel`'s own Telegram README claiming
+  otherwise ("automatically set when your server starts") — grepped the installed
+  `telegram_chat.py` directly and confirmed there's no `setWebhook` call anywhere in it. Register
+  it manually with `curl "https://api.telegram.org/bot<TOKEN>/setWebhook?url=<public-url>/telegram/webhook"`
+  every time the public tunnel URL changes.
+
 ## Slack: implemented, not live-confirmed
 
-`app.py` wires `AgentSlackRequestHandler` alongside the web API unconditionally — both handlers
-are constructed in one `RESTAPI.run([AgentRESTRequestHandler(), AgentSlackRequestHandler()])`
+`app.py` wires `AgentSlackRequestHandler` alongside the web API unconditionally — handlers
+are constructed in one `RESTAPI.run([AgentRESTRequestHandler(), AgentSlackRequestHandler(), AgentTelegramRequestHandler()])`
 call, so `SLACK_BOT_TOKEN`/`SLACK_SIGNING_SECRET` must be set (even to placeholders) for `app.py`
-to start at all. Everything checkable without live Slack traffic was verified: the route exists,
-correctly rejects unsigned requests, and the OAuth scopes/event subscriptions were confirmed
-correctly configured in the Slack admin UI. Live webhook delivery was never confirmed working in
-practice — see `README.md`'s Known Limitations for what was tried. If picking this back up, a
-fresh Slack app (rather than the one already fought with) may be the fastest path to ruling out
-accumulated configuration drift.
+to start at all.
+
+Live webhook delivery was never confirmed working, despite ruling out everything checkable:
+route live and correctly rejects unsigned requests; OAuth scopes and event subscriptions
+confirmed correctly configured and the app reinstalled in the Slack admin UI; App Home's
+messages tab enabled (off by default, blocks DMs otherwise); the public tunnel confirmed
+genuinely reachable from an independent client (not just curl from the same machine) — tried
+across two tunnel providers (Pinggy, then ngrok with a stable claimed domain) to rule out a
+tunnel-specific problem. The consistent result: Slack's one-time URL-verification handshake
+(`type: url_verification`) reached the server correctly every time, on both tunnels, but a real
+`message` event never did — not once. That asymmetry (verification works, live delivery doesn't,
+across two different endpoints) points to something on Slack's account/workspace side that isn't
+exposed by the app-configuration screens, not a missed setup step. If picking this back up, a
+completely fresh Slack app (new App ID, not reinstalling the existing one) is the next thing to
+try, on the chance something is stuck to this specific app's id rather than its configuration.
 
 ## Running things
 

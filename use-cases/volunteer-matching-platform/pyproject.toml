@@ -5,7 +5,7 @@ description = "Agent Kernel multi-agent solution matching volunteers to opportun
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "agentkernel[cli,pydanticai,api,slack,chromadb]>=0.8.1",
+    "agentkernel[cli,pydanticai,api,slack,chromadb,telegram]>=0.8.1",
     # agentkernel[pydanticai] installs the provider-agnostic pydantic-ai-slim core only —
     # this project uses Google Gemini (free tier via Google AI Studio, no card required).
     "pydantic-ai-slim[google]>=2.13.0",
