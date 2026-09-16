@@ -40,6 +40,10 @@ e2e:
       path: examples/cli/pydanticai/
     - type: cli
       path: examples/cli/pydanticai_context
+    - type: cli
+      path: examples/cli/custom-evaluator
+    - type: cli
+      path: examples/cli/opik-evaluator
     # - type: cli
     #   path: examples/cli/guardrail/walledai
 
@@ -59,6 +63,12 @@ e2e:
     #   path: examples/sandbox/e2b
     - type: api
       path: examples/sandbox/identity
+    # Self-skips unless docker, kind, kubectl, and OPENAI_API_KEY are all available.
+    - type: containerized
+      path: examples/sandbox/broker-kafka
+    # Self-skips unless docker, kind, kubectl, helm, and OPENAI_API_KEY are all available.
+    - type: containerized
+      path: examples/sandbox/broker-nats
 
     # API examples
     - type: api
@@ -87,6 +97,8 @@ e2e:
     - type: api
       path: examples/api/telegram
     - type: api
+      path: examples/api/teams
+    - type: api
       path: examples/api/messenger
     - type: api
       path: examples/api/whatsapp
@@ -102,6 +114,10 @@ e2e:
       path: examples/api/pydanticai
     - type: api
       path: examples/api/pydanticai-streaming
+    - type: api
+      path: examples/api/agui
+    - type: api
+      path: examples/api/schedule-openai
     
     # Memory examples
     - type: memory

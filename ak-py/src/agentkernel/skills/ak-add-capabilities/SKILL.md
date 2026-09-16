@@ -3,15 +3,16 @@ name: ak-add-capabilities
 description: >
   Add capabilities to an existing Agent Kernel project. This skill guides you through
   adding guardrails, tracing/observability, session persistence, knowledge bases, MCP server,
-  A2A server, pre/post hooks, multimodal support, conversation thread support, and the sandbox
-  capability (isolated code execution). Session
+  A2A server, AG-UI server, pre/post hooks, multimodal support, conversation thread support,
+  scheduled tasks (deferred and recurring chat execution), and the sandbox capability
+  (isolated code execution). Session
   persistence supports Redis, DynamoDB (AWS), Cosmos DB (Azure), and Firestore (GCP).
   Conversation threads support in-memory, Redis, Valkey, DynamoDB (AWS), Firestore (GCP),
   and Cosmos DB (Azure) backends. Generates configuration and code changes needed.
 license: Apache-2.0
 metadata:
   author: yaalalabs
-  version: "0.8.1"
+  version: "0.9.1"
   category: user
 ---
 
@@ -41,6 +42,8 @@ Which capability would you like to add?
 8. **Multimodal** — Image and file attachment support
 9. **Conversation Threads** — Persistent, named conversation history keyed by `session_id`
 10. **Sandbox** — Isolated code/command execution with pluggable providers, workload profiles, policy, and per-user identity
+11. **AG-UI Server** — Stream any agent to an AG-UI-compliant frontend (text, tool calls, reasoning, shared state)
+12. **Scheduled Tasks** — Deferred and recurring chat execution (a `schedule` block on a chat request, management routes, agent tools)
 
 ### Step 3: Generate Changes
 
@@ -55,7 +58,7 @@ Which capability would you like to add?
 1. Update `pyproject.toml`:
 ```toml
 dependencies = [
-    "agentkernel[openai,api]>=0.8.1",
+    "agentkernel[openai,api]>=0.9.1",
     # OpenAI guardrails use the openai extra — already included if using OpenAI framework
 ]
 ```
@@ -109,7 +112,7 @@ guardrail:
 1. Update `pyproject.toml`:
 ```toml
 dependencies = [
-    "agentkernel[openai,api,aws]>=0.8.1",
+    "agentkernel[openai,api,aws]>=0.9.1",
 ]
 ```
 
@@ -135,7 +138,7 @@ guardrail:
 1. Update `pyproject.toml`:
 ```toml
 dependencies = [
-    "agentkernel[openai,api,walledai]>=0.8.1",
+    "agentkernel[openai,api,walledai]>=0.9.1",
 ]
 ```
 
@@ -172,7 +175,7 @@ export WALLED_API_KEY="your-walledai-api-key"
 1. Update `pyproject.toml`:
 ```toml
 dependencies = [
-    "agentkernel[openai,api,langfuse]>=0.8.1",
+    "agentkernel[openai,api,langfuse]>=0.9.1",
 ]
 ```
 
@@ -197,7 +200,7 @@ export LANGFUSE_HOST="https://cloud.langfuse.com"   # or self-hosted URL
 1. Update `pyproject.toml`:
 ```toml
 dependencies = [
-    "agentkernel[openai,api,openllmetry]>=0.8.1",
+    "agentkernel[openai,api,openllmetry]>=0.9.1",
 ]
 ```
 
@@ -215,7 +218,7 @@ trace:
 1. Update `pyproject.toml`:
 ```toml
 dependencies = [
-    "agentkernel[openai,api,logfire]>=0.8.1",
+    "agentkernel[openai,api,logfire]>=0.9.1",
 ]
 ```
 
@@ -244,7 +247,7 @@ export LOGFIRE_TOKEN="your-write-token"
 1. Update `pyproject.toml`:
 ```toml
 dependencies = [
-    "agentkernel[openai,api,redis]>=0.8.1",
+    "agentkernel[openai,api,redis]>=0.9.1",
 ]
 ```
 
@@ -264,7 +267,7 @@ session:
 1. Update `pyproject.toml`:
 ```toml
 dependencies = [
-    "agentkernel[openai,api,aws]>=0.8.1",
+    "agentkernel[openai,api,aws]>=0.9.1",
 ]
 ```
 
@@ -286,7 +289,7 @@ session:
 1. Update `pyproject.toml`:
 ```toml
 dependencies = [
-    "agentkernel[openai,api,azure]>=0.8.1",
+    "agentkernel[openai,api,azure]>=0.9.1",
 ]
 ```
 
@@ -308,7 +311,7 @@ session:
 1. Update `pyproject.toml`:
 ```toml
 dependencies = [
-    "agentkernel[openai,api,gcp]>=0.8.1",
+    "agentkernel[openai,api,gcp]>=0.9.1",
 ]
 ```
 
@@ -341,9 +344,9 @@ Add durable knowledge tools that your agents can query and update across session
 
 ```toml
 dependencies = [
-  "agentkernel[openai,api,chromadb]>=0.8.1",  # for Chroma
-  # or "agentkernel[openai,api,neo4j]>=0.8.1"
-  # or "agentkernel[openai,api,trino]>=0.8.1"
+  "agentkernel[openai,api,chromadb]>=0.9.1",  # for Chroma
+  # or "agentkernel[openai,api,neo4j]>=0.9.1"
+  # or "agentkernel[openai,api,trino]>=0.9.1"
 ]
 ```
 
@@ -424,7 +427,7 @@ Expose your agents as MCP (Model Context Protocol) tools so other AI systems can
 1. Update `pyproject.toml`:
 ```toml
 dependencies = [
-    "agentkernel[openai,api,mcp]>=0.8.1",
+    "agentkernel[openai,api,mcp]>=0.9.1",
 ]
 ```
 
@@ -450,7 +453,7 @@ Enable Agent-to-Agent communication via Google's A2A protocol.
 1. Update `pyproject.toml`:
 ```toml
 dependencies = [
-    "agentkernel[openai,api,a2a]>=0.8.1",
+    "agentkernel[openai,api,a2a]>=0.9.1",
 ]
 ```
 
@@ -464,6 +467,51 @@ a2a:
 ```
 
 3. No code changes needed. The A2A well-known endpoint is automatically available at `/.well-known/agent.json`.
+
+---
+
+#### AG-UI Server
+
+Stream any streaming-capable agent (OpenAI Agents SDK, LangGraph, Google ADK, Pydantic AI — not
+CrewAI or Smolagents) to a frontend over the [AG-UI protocol](https://github.com/ag-ui-protocol/ag-ui):
+text, tool calls, reasoning, and an optional shared JSON state, all as one typed event stream.
+
+1. Update `pyproject.toml`:
+```toml
+dependencies = [
+    "agentkernel[openai,api,agui]>=0.9.1",
+]
+```
+
+2. Update `config.yaml`:
+```yaml
+agui:
+  agents: ["general"]        # omitted = every streaming-capable agent is reachable
+  prefix: "/agui"
+  default_agent: "general"   # also serves POST /agui; must be one of `agents` when both are set
+  state:
+    enabled: true             # attaches get_agui_state / update_agui_state
+  client_context:
+    enabled: true             # attaches read-only get_forwarded_props / get_agui_context
+```
+
+3. Mount `AGUIRequestHandler` with an `Authoriser` (or `AuthValidator`) — AG-UI has no anonymous
+   mode, because a run executes an agent on the caller's behalf:
+```python
+from agentkernel.agui import AGUIRequestHandler
+from agentkernel.api import RESTAPI
+from agentkernel.auth import Authoriser
+
+class MyAuthoriser(Authoriser):
+    def authorise(self, token: str) -> str | None:
+        ...  # validate the token, return the caller's user_id or None
+
+RESTAPI.run(handlers=[AGUIRequestHandler(authoriser=MyAuthoriser())])
+```
+
+4. Routes are served under `agui.prefix`: `GET {prefix}/agents`, `POST {prefix}/{agent_name}`, and
+   `POST {prefix}` when `default_agent` is set. See `examples/api/agui` for a full demo including a
+   React/Vite frontend.
 
 ---
 
@@ -537,13 +585,17 @@ module.pre_hook(agent, [RAGPreHook()])
 module.post_hook(agent, [DisclaimerPostHook()])
 ```
 
-**Streaming token hook (optional):** override `on_stream_chunk` on a `PostHook` to inspect or modify each token delta while `execution.mode: stream` is active (e.g. redact sensitive text before it reaches the client). Return `None` to drop a token entirely. Only called when streaming; regular `on_run()` still handles the non-streaming path.
+**Streaming event hook (optional):** override `on_stream_event` on a `PostHook` to inspect or modify every event a streamed run produces while `execution.mode: stream` is active. Unlike `on_run` it sees the whole stream — message and reasoning text, tool call names, arguments and results, and the boundaries that pair them. Return the event to pass it on, a modified event of the same `type` to rewrite it, `None` to drop it, or a list to emit several events in its place (a list is emitted as-is and ends the chain for that event, so `return event` and `return [event]` differ). Raise `StreamHalt` to end the run: Agent Kernel closes any open boundary, emits one error chunk, and does not store the session. Only called when streaming; regular `on_run()` still handles the non-streaming path.
 
 ```python
 class RedactingPostHook(DisclaimerPostHook):
-    async def on_stream_chunk(self, session, requests, agent, delta: str) -> str | None:
-        return delta.replace("SECRET", "***")
+    async def on_stream_event(self, session, requests, agent, event):
+        if event.type == "tool_call_result":
+            return event.model_copy(update={"content": event.content.replace("SECRET", "***")})
+        return event
 ```
+
+To rewrite text that spans fragments, hold each `text_delta` by returning `None` while accumulating it in `session.get_volatile_cache()`, then return `[TextDelta(...), event]` at `message_end`. Accumulate in the volatile cache, never on `self` — one hook instance serves every concurrent request.
 
 **Per-run framework context (optional):** hooks are the supported surface for the reserved
 `framework_context` session key — a framework-agnostic, picklable context/state dict that the runner
@@ -618,7 +670,7 @@ Enable image and file processing in your agents.
 1. Update `pyproject.toml`:
 ```toml
 dependencies = [
-    "agentkernel[openai,api,multimodal]>=0.8.1",
+    "agentkernel[openai,api,multimodal]>=0.9.1",
 ]
 ```
 
@@ -643,7 +695,7 @@ multimodal:
 1. Update `pyproject.toml`:
 ```toml
 dependencies = [
-    "agentkernel[openai,api,redis,multimodal]>=0.8.1",
+    "agentkernel[openai,api,redis,multimodal]>=0.9.1",
 ]
 ```
 
@@ -666,7 +718,7 @@ multimodal:
 1. Update `pyproject.toml`:
 ```toml
 dependencies = [
-    "agentkernel[openai,api,aws,multimodal]>=0.8.1",
+    "agentkernel[openai,api,aws,multimodal]>=0.9.1",
 ]
 ```
 
@@ -750,7 +802,7 @@ Enable persistent, named conversation threads keyed by `session_id`.
 1. Update `pyproject.toml`:
 ```toml
 dependencies = [
-    "agentkernel[openai,api]>=0.8.1",
+    "agentkernel[openai,api]>=0.9.1",
 ]
 ```
 
@@ -780,7 +832,7 @@ thread:
 **For LLM-based thread naming**, add the `thread` extra:
 ```toml
 dependencies = [
-    "agentkernel[openai,api,thread]>=0.8.1",
+    "agentkernel[openai,api,thread]>=0.9.1",
 ]
 ```
 ```yaml
@@ -795,7 +847,7 @@ thread:
 
 ```toml
 dependencies = [
-    "agentkernel[openai,api,redis,thread]>=0.8.1",
+    "agentkernel[openai,api,redis,thread]>=0.9.1",
 ]
 ```
 ```yaml
@@ -811,7 +863,7 @@ thread:
 
 ```toml
 dependencies = [
-    "agentkernel[openai,api,valkey,thread]>=0.8.1",
+    "agentkernel[openai,api,valkey,thread]>=0.9.1",
 ]
 ```
 ```yaml
@@ -827,7 +879,7 @@ thread:
 
 ```toml
 dependencies = [
-    "agentkernel[openai,api,aws,thread]>=0.8.1",
+    "agentkernel[openai,api,aws,thread]>=0.9.1",
 ]
 ```
 ```yaml
@@ -892,6 +944,178 @@ See `examples/api/thread-openai` and `examples/api/multimodal/thread-openai`.
 
 ---
 
+#### Scheduled Tasks
+
+**What it does:** Lets a chat request run later, once or repeatedly. A request carrying a `schedule`
+block is not executed — it is registered as a scheduled task and acknowledged with **HTTP 202**. When
+an occurrence is due, the provider delivers the stored prompt into the input queue as a plain chat
+request and the normal execution path runs it. The block also injects five agent tools
+(`create_schedule`, `list_schedules`, `get_schedule`, `update_schedule`, `delete_schedule`) so the
+agent can defer work itself. The management routes are **not** mounted from config — the application
+mounts `ScheduleRESTRequestHandler` when it wants them, exactly as it mounts the Slack and thread
+handlers.
+
+**Ask:** Which provider — `local` (in-process thread, development) or `eventbridge` (AWS EventBridge
+Scheduler, production)? And which task store — in-memory (default, dev), Redis, Valkey, or DynamoDB
+(AWS)?
+
+**Important:** occurrences are delivered *into the input queue*, so scheduling requires the queue
+execution pipeline. Locally the `in_memory` transport satisfies this inside one process; on AWS it
+means deploying in queue mode.
+
+**Basic setup (local provider, in-memory store — development):**
+
+1. Update `pyproject.toml`:
+```toml
+dependencies = [
+    "agentkernel[openai,api,cron]>=0.9.1",
+]
+```
+The `cron` extra brings `croniter`, needed for cron parsing.
+
+2. Update `config.yaml`. The presence of the `schedule` block is what enables deferring and the agent
+   tools; the management routes are mounted by the app in step 3:
+```yaml
+schedule:
+  provider:
+    type: local          # other supported providers: eventbridge
+  store:
+    type: in_memory      # other supported backends: redis | valkey | dynamodb
+  # agents: [assistant]  # restrict the schedule tools to named agents; omitted = all agents
+
+execution:
+  mode: rest_sync
+  queues:
+    type: in_memory      # required: the provider fires occurrences into the input queue
+```
+
+3. Mount the management routes in `app.py`. Nothing is mounted from config, so an app that skips this
+   step still defers requests and still gets the agent tools — it just serves no `/api/v1/schedules`
+   routes:
+```python
+from agentkernel.pipeline import IOHandler
+from agentkernel.schedule import ScheduleRESTRequestHandler
+
+if __name__ == "__main__":
+    # config.yaml selects the in_memory queue transport, so this boots the whole single-process
+    # pipeline. The passed handlers are mounted alongside the pipeline's own chat route.
+    IOHandler.run(handlers=[ScheduleRESTRequestHandler()])
+```
+
+4. When enabled:
+   - A JSON chat request may carry a `schedule` block: exactly one of `at` (ISO-8601 local wall-clock
+     timestamp, must be in the future) or `cron` (standard 5-field expression), plus `timezone`
+     (IANA, default `UTC`) and `session_mode` (`reuse` the originating session, or `new` for a fresh
+     session per occurrence)
+   - `user_id` becomes **required** on any request that schedules: it is the owner the task is stored
+     under and the identity later reads and changes are checked against
+   - `GET /api/v1/schedules` (cursor-paginated) and `GET`/`PUT`/`DELETE /api/v1/schedules/{task_id}`
+     are mounted for listing, reading, amending and cancelling (open by default, or protected by a
+     pluggable `Authoriser`). There is deliberately no `POST` — creation is the chat block or the
+     agent tool
+   - `PUT` is full-replacement: send every value, including the ones that are not changing. `status`
+     covers the `active`/`paused` switch; a cancelled task keeps its record as the audit trail
+   - The five schedule tools and their guidance are injected into every agent's system prompt; each
+     acts as the invoking user, so an agent can never reach another user's schedules
+   - A scheduled request creates no conversation thread; the occurrences that later fire do
+   - Multipart chat routes cannot carry a `schedule` block — use the JSON route
+
+**Send a chat request with a schedule:**
+
+```bash
+# One-time
+curl -i -X POST http://localhost:8000/api/v1/chat \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Send me the daily summary", "session_id": "ses-1", "user_id": "alice",
+       "schedule": {"at": "2030-01-31T09:00:00", "timezone": "Asia/Colombo"}}'
+
+# HTTP/1.1 202 Accepted
+# {"result":"{\"status\": \"SCHEDULED\", \"scheduled_task_id\": \"74ca19a5-...\", \"session_id\": \"ses-1\"}","session_id":"ses-1"}
+
+# Recurring, each occurrence in a fresh session
+curl -X POST http://localhost:8000/api/v1/chat \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Send the weekly report", "session_id": "ses-2", "user_id": "alice",
+       "schedule": {"cron": "0 9 * * 1", "timezone": "Asia/Colombo", "session_mode": "new"}}'
+
+# Manage
+curl "http://localhost:8000/api/v1/schedules?user_id=alice"
+curl -X DELETE http://localhost:8000/api/v1/schedules/{task_id}
+```
+
+**For production on AWS (EventBridge Scheduler + DynamoDB):**
+
+```toml
+dependencies = [
+    "agentkernel[openai,api,aws,cron]>=0.9.1",
+]
+```
+```yaml
+schedule:
+  provider:
+    type: eventbridge
+  store:
+    type: dynamodb
+    dynamodb:
+      table_name: "ak-agent-schedules"   # partition key task_id (S), no sort key
+      ttl: 0                             # 0 disables expiry (the default)
+```
+
+`group_name`, `role_arn` and `queue_arn` under `schedule.provider.eventbridge` are supplied by the
+Terraform modules as `AK_SCHEDULE__PROVIDER__EVENTBRIDGE__*` environment variables — do not hardcode
+them. See the `ak-cloud-deploy` skill.
+
+**For Redis or Valkey task storage:**
+
+```toml
+dependencies = [
+    "agentkernel[openai,api,redis,cron]>=0.9.1",   # or valkey
+]
+```
+```yaml
+schedule:
+  store:
+    type: redis           # or valkey, with a `valkey:` block
+    redis:
+      url: "redis://localhost:6379"
+      prefix: "ak:schedule:"
+      ttl: 0              # unlike threads this defaults to 0 — an expired task would stop firing silently
+```
+
+**Topology rules (validated at startup, not at first use):**
+
+| Combination | Rejected because |
+|---|---|
+| `local` provider + a broker transport (`sqs`/`kafka`/`nats`) | The in-process timers are unreachable from the process serving the management routes — a cancellation would report success while the timer kept firing |
+| `local` provider + a shared store | Same split: the timers and the records must live together |
+| `in_memory` store + a broker transport | The records would be split across the runner and IO-handler processes |
+| `eventbridge` provider + a non-`sqs` transport | Delivery is baked into the schedule registration as an SQS target |
+
+**Protecting the management routes with an Authoriser:** the routes are mounted by the application,
+so pass the `Authoriser` to the `ScheduleRESTRequestHandler` constructor:
+
+```python
+from typing import Optional
+from agentkernel.auth import Authoriser
+from agentkernel.pipeline import IOHandler
+from agentkernel.schedule import ScheduleRESTRequestHandler
+
+class DemoAuthoriser(Authoriser):
+    def authorise(self, token: str) -> Optional[str]:
+        # Validate the ****** against your own auth provider, return the user_id or None.
+        return {"alice-token": "alice", "bob-token": "bob"}.get(token)
+
+if __name__ == "__main__":
+    IOHandler.run(handlers=[ScheduleRESTRequestHandler(authoriser=DemoAuthoriser())])
+```
+
+With an Authoriser configured, listings are scoped to the resolved `user_id` and reading or changing
+another user's schedule is rejected (403). Without one, the routes are open.
+
+See `examples/api/schedule-openai`.
+
+---
+
 #### Sandbox
 
 **What it does:** Lets agents execute code and shell commands in an isolated, permission-bounded
@@ -900,9 +1124,13 @@ environment. When enabled, agents automatically gain sandbox tools (`run_code`, 
 `new_sandbox_session`, `destroy_sandbox_session`) and the usage guidance is injected into their
 system prompt — the agent's own instructions need not mention the sandbox.
 
-**Ask:** Which provider — `local_subprocess` (no isolation; dev/test only) or `docker`
-(container isolation; needs the `sandbox-docker` extra and a Docker daemon)? Should it apply to
-all agents or only some (the `agents` list)?
+**Ask:** Which provider — `local_subprocess` (no isolation; dev/test only), `docker`
+(container isolation; needs the `sandbox-docker` extra and a Docker daemon), or another
+shipped provider (`kubernetes` pods, `e2b` micro-VMs, `daytona` cloud containers, `ec2_ssm`
+attach-only; see the [Sandbox guide](https://kernel.yaala.ai/docs/advanced/sandbox))? Should
+it apply to all agents or only some (the `agents` list)? For executions longer than the
+process can wait, the `queue` broker flavor runs them on a separate worker
+(`sandbox.broker.flavor: queue`; same guide).
 
 **1. Install the extra (docker only):**
 

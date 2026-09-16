@@ -49,7 +49,7 @@ Which messaging platform would you like to integrate?
 Add `slack` to the extras:
 ```toml
 dependencies = [
-    "agentkernel[openai,api,slack]>=0.8.1",
+    "agentkernel[openai,api,slack]>=0.9.1",
 ]
 ```
 
@@ -94,7 +94,7 @@ export SLACK_SIGNING_SECRET="..."          # App signing secret
 
 ```toml
 dependencies = [
-    "agentkernel[openai,api,whatsapp]>=0.8.1",
+    "agentkernel[openai,api,whatsapp]>=0.9.1",
 ]
 ```
 
@@ -140,7 +140,7 @@ export AK_WHATSAPP__APP_SECRET="..."           # App secret for signature verifi
 
 ```toml
 dependencies = [
-    "agentkernel[openai,api,messenger]>=0.8.1",
+    "agentkernel[openai,api,messenger]>=0.9.1",
 ]
 ```
 
@@ -183,7 +183,7 @@ export AK_MESSENGER__APP_SECRET="..."
 
 ```toml
 dependencies = [
-    "agentkernel[openai,api,instagram]>=0.8.1",
+    "agentkernel[openai,api,instagram]>=0.9.1",
 ]
 ```
 
@@ -220,7 +220,7 @@ export AK_INSTAGRAM__INSTAGRAM_ACCOUNT_ID="..."
 
 ```toml
 dependencies = [
-    "agentkernel[openai,api,telegram]>=0.8.1",
+    "agentkernel[openai,api,telegram]>=0.9.1",
 ]
 ```
 
@@ -261,7 +261,7 @@ export AK_TELEGRAM__WEBHOOK_SECRET="..."       # Your webhook secret
 
 ```toml
 dependencies = [
-    "agentkernel[openai,api,gmail]>=0.8.1",
+    "agentkernel[openai,api,gmail]>=0.9.1",
 ]
 ```
 
@@ -299,7 +299,7 @@ if __name__ == "__main__":
 
 ```toml
 dependencies = [
-    "agentkernel[openai,api,teams]>=0.8.1",
+    "agentkernel[openai,api,teams]>=0.9.1",
 ]
 ```
 
@@ -327,7 +327,7 @@ if __name__ == "__main__":
 ```bash
 export AK_TEAMS__APP_ID="<azure-app-client-id>"
 export AK_TEAMS__APP_PASSWORD="<azure-app-client-secret>"
-export AK_TEAMS__TENANT_ID="<tenant-id>"   # Optional for single-tenant
+export AK_TEAMS__TENANT_ID="<tenant-id>"   # Leave empty for a multi-tenant bot
 ```
 
 **5. Setup instructions:**
@@ -335,6 +335,8 @@ export AK_TEAMS__TENANT_ID="<tenant-id>"   # Optional for single-tenant
 - Set messaging endpoint to `https://<your-domain>/teams/messages`
 - Add Microsoft Teams channel in Azure Bot configuration
 - Install or publish the Teams app in your tenant via Developer Portal
+- Attachments whose download URL is not pre-authenticated need `tenant_id` set plus the
+  `Sites.Read.All` **Office 365 SharePoint Online** application permission (admin consent)
 
 ---
 
@@ -359,7 +361,7 @@ if __name__ == "__main__":
 Update `pyproject.toml`:
 ```toml
 dependencies = [
-    "agentkernel[openai,api,slack,whatsapp,telegram]>=0.8.1",
+    "agentkernel[openai,api,slack,whatsapp,telegram]>=0.9.1",
 ]
 ```
 

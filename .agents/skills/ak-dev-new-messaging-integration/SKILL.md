@@ -173,7 +173,7 @@ This allows `from agentkernel.<platform> import Agent<Platform>RequestHandler`.
 
 ### 5. Add Configuration
 
-Add a configuration section to `ak-py/src/agentkernel/core/config.py`. Follow the existing platform config idiom (e.g. `_TelegramConfig`), which uses `Field` with empty-string defaults. Note: Teams currently has no config section in `AKConfig`, so do not use it as a reference for this step — use Telegram or Slack instead.
+Add a configuration section to `ak-py/src/agentkernel/core/config.py`. Follow the existing platform config idiom (e.g. `_TelegramConfig`), which uses `Field` with empty-string defaults.
 
 ```python
 class _<Platform>Config(BaseModel):
@@ -297,6 +297,8 @@ Add `docs/docs/integrations/<platform>.md` covering:
 - Example code
 - Webhook URL setup
 
+Then update the docs-site React pages that enumerate platforms: the `MESSAGING_PLATFORMS` list in `docs/src/pages/features.tsx` (logo under `docs/static/img/integrations/`, link to the new page) and the `pills` on the `ak-add-integration` entry in `AGENT_SKILLS` in `docs/src/pages/index.tsx`. Grep `docs/src/pages/*.tsx`, `README.md`, and `docs/docs/intro.md` for the platform roll call ("Slack, WhatsApp, ...") and add the new name wherever the others are listed.
+
 ## Checklist
 
 - [ ] `ak-py/src/agentkernel/integration/<platform>/` directory
@@ -309,3 +311,4 @@ Add `docs/docs/integrations/<platform>.md` covering:
 - [ ] Example in `examples/api/<platform>/`
 - [ ] Tests in `ak-py/tests/`
 - [ ] Documentation in `docs/docs/integrations/<platform>.md`
+- [ ] Platform inventories on the docs-site pages (`docs/src/pages/features.tsx` `MESSAGING_PLATFORMS`, `docs/src/pages/index.tsx` `AGENT_SKILLS` pills) and in the README/intro roll calls

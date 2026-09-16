@@ -117,7 +117,7 @@ class NatsTransportConsumer(TransportConsumer):
         if not self._partitions:
             return []
 
-        per_partition_wait = max(wait_seconds / len(self._partitions), MIN_PARTITION_FETCH_SECONDS)
+        idle_wait = max(wait_seconds / len(self._partitions), MIN_PARTITION_FETCH_SECONDS)
         deadline = time.monotonic() + wait_seconds
         messages: List[QueueMessage] = []
 
@@ -126,7 +126,14 @@ class NatsTransportConsumer(TransportConsumer):
                 break
             partition = self._partitions[self._cursor % len(self._partitions)]
             self._cursor += 1
-            messages.extend(self._fetch_partition(partition, batch_size - len(messages), per_partition_wait))
+            # Once the batch holds something, the remaining partitions are only a top-up and get
+            # the floor wait rather than their full slice. A pull always burns its whole timeout,
+            # so waiting them out would hold the messages already in hand for the rest of the
+            # fetch window: that is added latency on every message, and their server-side ack_wait
+            # is already ticking, so a short ack_wait can make a message redeliverable before the
+            # caller ever sees it and break the one-in-flight guarantee.
+            partition_wait = MIN_PARTITION_FETCH_SECONDS if messages else idle_wait
+            messages.extend(self._fetch_partition(partition, batch_size - len(messages), partition_wait))
         return messages
 
     def ack(self, message: QueueMessage) -> None:
@@ -224,9 +231,13 @@ class NatsTransport(QueueTransport):
         request_timeout: float = 10.0,
         auto_provision: bool = False,
         max_deliver: Optional[Dict[QueueName, int]] = None,
+        config_path: str = "execution.queues",
     ):
+        # config_path names the queues block this transport was built from (#503 seam:
+        # the sandbox broker passes sandbox.broker.queue), so errors point at the right section.
+        self._config_path = config_path
         if partitions < 1:
-            raise AKConfigError(f"execution.queues.nats.partitions must be >= 1, got {partitions}")
+            raise AKConfigError(f"{config_path}.nats.partitions must be >= 1, got {partitions}")
         self._url = url
         self._streams = {QueueName.INPUT: input_stream, QueueName.OUTPUT: output_stream}
         self._prefixes = {QueueName.INPUT: input_subject_prefix, QueueName.OUTPUT: output_subject_prefix}
@@ -308,8 +319,8 @@ class NatsTransport(QueueTransport):
             _log.warning(
                 f"Stream {self._streams[queue]} has {self._partitions} partition(s) but {num_consumers} consumer(s) are "
                 f"configured for it: only {self._partitions} message(s) can be in flight at once, because each "
-                "partition consumer allows one. Raise execution.queues.nats.partitions or lower "
-                f"execution.queues.{queue.value}.no_of_consumers (note that changing partitions re-maps sessions)."
+                f"partition consumer allows one. Raise {self._config_path}.nats.partitions or lower "
+                f"{self._config_path}.{queue.value}.no_of_consumers (note that changing partitions re-maps sessions)."
             )
         else:
             _log.info(f"Stream {self._streams[queue]}: {self._partitions} partition(s) for {num_consumers} configured consumer(s)")
@@ -385,7 +396,7 @@ class NatsTransport(QueueTransport):
         except NotFoundError as e:
             raise AKConfigError(
                 f"JetStream stream '{stream}' does not exist. Create it (a NACK Stream CR, or the nats CLI) or set "
-                "execution.queues.nats.auto_provision: true to have Agent Kernel create it at startup."
+                f"{self._config_path}.nats.auto_provision: true to have Agent Kernel create it at startup."
             ) from e
 
         missing = []
@@ -399,7 +410,7 @@ class NatsTransport(QueueTransport):
             raise AKConfigError(
                 f"JetStream stream '{stream}' is missing {len(missing)} of {self._partitions} partition consumer(s), "
                 f"starting with '{missing[0]}'. Create them (NACK Consumer CRs) or set "
-                "execution.queues.nats.auto_provision: true. Each consumer filters "
+                f"{self._config_path}.nats.auto_provision: true. Each consumer filters "
                 f"'{self._prefixes[queue]}.<partition>.>' with max_ack_pending=1."
             )
 

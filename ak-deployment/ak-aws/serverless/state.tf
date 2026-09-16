@@ -21,6 +21,11 @@ locals {
   dynamodb_multimodal_memory_table_name = var.create_dynamodb_multimodal_memory_table == true ? module.dynamodb_multimodal_memory[0].table_name : null
   dynamodb_thread_table_arn             = var.create_dynamodb_thread_table == true ? module.dynamodb_thread[0].table_arn : null
   dynamodb_thread_table_name            = var.create_dynamodb_thread_table == true ? module.dynamodb_thread[0].table_name : null
+  dynamodb_schedule_table_arn           = var.create_dynamodb_schedule_table == true ? module.dynamodb_schedule[0].table_arn : null
+  dynamodb_schedule_table_name          = var.create_dynamodb_schedule_table == true ? module.dynamodb_schedule[0].table_name : null
+  schedule_group_name                   = var.enable_scheduling ? aws_scheduler_schedule_group.schedules[0].name : null
+  schedule_group_arn                    = var.enable_scheduling ? aws_scheduler_schedule_group.schedules[0].arn : null
+  scheduler_execution_role_arn          = var.enable_scheduling ? aws_iam_role.scheduler_execution[0].arn : null
 
   request_handler_enabled              = var.enable_api_gateway
   request_handler_lambda_function_name = local.request_handler_enabled ? module.request_handler[0].lambda_function_name : null
@@ -103,7 +108,7 @@ resource "aws_security_group" "lambda" {
 module "lambda_source_storage" {
   count                = local.any_s3zip ? 1 : 0
   source               = "yaalalabs/ak-common/aws//modules/s3"
-  version              = "0.8.1"
+  version              = "0.9.1"
   region               = var.region
   env_alias            = var.env_alias
   is_production        = var.is_production
@@ -115,7 +120,7 @@ module "lambda_source_storage" {
 module "request_handler_source_package" {
   count            = local.request_handler_enabled ? ((var.request_handler.package_type == "S3Zip" && try(var.request_handler.lambda_package_s3, null) == null) ? 1 : 0) : 0
   source           = "yaalalabs/ak-common/aws//modules/lambda-package"
-  version          = "0.8.1"
+  version          = "0.9.1"
   env_alias        = var.env_alias
   region           = var.region
   module_name      = var.request_handler.module_name
@@ -128,7 +133,7 @@ module "request_handler_source_package" {
 module "agent_runner_source_package" {
   count            = (var.agent_runner.package_type == "S3Zip" && try(var.agent_runner.lambda_package_s3, null) == null) ? 1 : 0
   source           = "yaalalabs/ak-common/aws//modules/lambda-package"
-  version          = "0.8.1"
+  version          = "0.9.1"
   env_alias        = var.env_alias
   region           = var.region
   module_name      = var.agent_runner.module_name
@@ -141,7 +146,7 @@ module "agent_runner_source_package" {
 module "response_handler_source_package" {
   count            = (var.queue_mode && var.response_handler.package_type == "S3Zip" && try(var.response_handler.lambda_package_s3, null) == null) ? 1 : 0
   source           = "yaalalabs/ak-common/aws//modules/lambda-package"
-  version          = "0.8.1"
+  version          = "0.9.1"
   env_alias        = var.env_alias
   region           = var.region
   module_name      = var.response_handler.module_name
@@ -153,7 +158,7 @@ module "response_handler_source_package" {
 
 module "vpc" {
   source               = "yaalalabs/ak-common/aws//modules/vpc"
-  version              = "0.8.1"
+  version              = "0.9.1"
   count                = var.vpc_id == null ? 1 : 0
   vpc_cidr             = var.vpc_cidr
   public_subnet_cidrs  = var.public_subnet_cidrs
@@ -166,7 +171,7 @@ module "vpc" {
 module "authorizer" {
   count                      = local.create_authorizer ? 1 : 0
   source                     = "yaalalabs/ak-common/aws//modules/authorizer"
-  version                    = "0.8.1"
+  version                    = "0.9.1"
   region                     = var.region
   product_alias              = var.product_alias
   env_alias                  = var.env_alias
@@ -244,7 +249,7 @@ module "websocket_api_gateway" {
 module "docker_image" {
   count         = local.request_handler_enabled ? ((var.request_handler.package_type == "Image" && try(var.request_handler.ecr_image_uri, null) == null) ? 1 : 0) : 0
   source        = "yaalalabs/ak-common/aws//modules/ecr"
-  version       = "0.8.1"
+  version       = "0.9.1"
   env_alias     = var.env_alias
   module_name   = var.request_handler.module_name
   product_alias = var.product_alias
@@ -254,7 +259,7 @@ module "docker_image" {
 module "agent_runner_docker_image" {
   count         = (var.agent_runner.package_type == "Image" && try(var.agent_runner.ecr_image_uri, null) == null) ? 1 : 0
   source        = "yaalalabs/ak-common/aws//modules/ecr"
-  version       = "0.8.1"
+  version       = "0.9.1"
   env_alias     = var.env_alias
   module_name   = var.agent_runner.module_name
   product_alias = var.product_alias
@@ -264,7 +269,7 @@ module "agent_runner_docker_image" {
 module "response_handler_docker_image" {
   count         = var.queue_mode && var.response_handler.package_type == "Image" && try(var.response_handler.ecr_image_uri, null) == null ? 1 : 0
   source        = "yaalalabs/ak-common/aws//modules/ecr"
-  version       = "0.8.1"
+  version       = "0.9.1"
   env_alias     = var.env_alias
   module_name   = var.response_handler.module_name
   product_alias = var.product_alias
@@ -273,7 +278,7 @@ module "response_handler_docker_image" {
 
 module "redis" {
   source        = "yaalalabs/ak-common/aws//modules/redis"
-  version       = "0.8.1"
+  version       = "0.9.1"
   count         = (var.create_redis_cluster == true || local.create_redis_response_store_effective) ? 1 : 0
   env_alias     = var.env_alias
   module_name   = var.module_name
@@ -285,7 +290,7 @@ module "redis" {
 
 module "valkey" {
   source        = "yaalalabs/ak-common/aws//modules/valkey"
-  version       = "0.8.1"
+  version       = "0.9.1"
   count         = (var.create_valkey_cluster == true || local.create_valkey_response_store_effective) ? 1 : 0
   env_alias     = var.env_alias
   module_name   = var.module_name
@@ -297,7 +302,7 @@ module "valkey" {
 
 module "dynamodb_memory" {
   source  = "yaalalabs/ak-common/aws//modules/dynamodb"
-  version = "0.8.1"
+  version = "0.9.1"
   count   = var.create_dynamodb_memory_table == true ? 1 : 0
   attributes = [
     { name = "session_id", type = "S" },
@@ -315,7 +320,7 @@ module "dynamodb_memory" {
 
 module "dynamodb_multimodal_memory" {
   source  = "yaalalabs/ak-common/aws//modules/dynamodb"
-  version = "0.8.1"
+  version = "0.9.1"
   count   = var.create_dynamodb_multimodal_memory_table == true ? 1 : 0
   attributes = [
     { name = "session_id", type = "S" },
@@ -333,7 +338,7 @@ module "dynamodb_multimodal_memory" {
 
 module "dynamodb_thread" {
   source  = "yaalalabs/ak-common/aws//modules/dynamodb"
-  version = "0.8.1"
+  version = "0.9.1"
   count   = var.create_dynamodb_thread_table == true ? 1 : 0
   attributes = [
     { name = "session_id", type = "S" },
@@ -349,6 +354,86 @@ module "dynamodb_thread" {
   table_name         = "thread_store"
 }
 
+module "dynamodb_schedule" {
+  source  = "yaalalabs/ak-common/aws//modules/dynamodb"
+  version = "0.9.1"
+  count   = var.create_dynamodb_schedule_table == true ? 1 : 0
+  attributes = [
+    { name = "task_id", type = "S" },
+  ]
+  hash_key = "task_id"
+  # Enabled so a deployment that opts into `schedule.store.dynamodb.ttl` works; the application's
+  # TTL defaults to 0, in which case items carry no `expiry_time` and never expire.
+  ttl_enabled        = true
+  ttl_attribute_name = "expiry_time"
+  env_alias          = var.env_alias
+  module_name        = var.module_name
+  product_alias      = var.product_alias
+  table_name         = "schedule_store"
+}
+
+# EventBridge Scheduler resources for the scheduling capability.
+# The application owns the schedules themselves (one per scheduled task, created at runtime through
+# `AKConfig.schedule.provider.type: eventbridge`); Terraform only provisions the group they live in
+# and the role Scheduler assumes to deliver each trigger to the Input Queue.
+
+data "aws_caller_identity" "current" {}
+
+check "scheduling_requires_queue_mode" {
+  assert {
+    condition     = var.enable_scheduling ? var.queue_mode : true
+    error_message = "[IMPORTANT] enable_scheduling requires queue_mode = true: EventBridge Scheduler delivers its triggers to the Input Queue, which only exists in queue mode."
+  }
+}
+
+resource "aws_scheduler_schedule_group" "schedules" {
+  count = var.enable_scheduling ? 1 : 0
+
+  name = "${var.product_alias}-${var.env_alias}-${var.module_name}-schedules"
+
+  tags = merge(var.tags, { Type = "ScheduleGroup" })
+}
+
+resource "aws_iam_role" "scheduler_execution" {
+  count = var.enable_scheduling ? 1 : 0
+
+  name        = "${var.product_alias}-${var.env_alias}-${var.module_name}-scheduler-exec-role"
+  description = "Role EventBridge Scheduler assumes to deliver scheduled triggers to the Input Queue"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Action    = "sts:AssumeRole"
+      Principal = { Service = "scheduler.amazonaws.com" }
+      Condition = {
+        StringEquals = {
+          "aws:SourceAccount" = data.aws_caller_identity.current.account_id
+        }
+      }
+    }]
+  })
+
+  tags = var.tags
+}
+
+resource "aws_iam_role_policy" "scheduler_send_to_input_queue" {
+  count = var.enable_scheduling ? 1 : 0
+
+  name = "${var.product_alias}-${var.env_alias}-${var.module_name}-scheduler-send-to-input-queue"
+  role = aws_iam_role.scheduler_execution[0].id
+
+  # No KMS statement: the queues use SQS-managed SSE unless a customer key is configured.
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["sqs:SendMessage"]
+      Resource = local.input_queue_arn
+    }]
+  })
+}
+
 module "queues" {
   count  = var.queue_mode ? 1 : 0
   source = "./modules/queues"
@@ -357,7 +442,12 @@ module "queues" {
   env_alias     = var.env_alias
   module_name   = var.module_name
   tags          = var.tags
-  queue_config  = var.queue_config
+
+  # EventBridge Scheduler cannot set a MessageDeduplicationId on the triggers it delivers, so
+  # scheduling forces content-based deduplication on the Input Queue.
+  queue_config = merge(var.queue_config, {
+    input_queue_content_based_deduplication = var.enable_scheduling
+  })
 }
 
 check "queue_visibility_timeouts" {
@@ -379,7 +469,7 @@ check "queue_visibility_timeouts" {
 module "websocket_connections" {
   count   = local.websocket_api_enabled ? 1 : 0
   source  = "yaalalabs/ak-common/aws//modules/dynamodb"
-  version = "0.8.1"
+  version = "0.9.1"
   attributes = [
     { name = "user_id", type = "S" },
     { name = "connection_id", type = "S" }
@@ -404,7 +494,7 @@ module "websocket_connections" {
 
 module "dynamodb_response_store" {
   source  = "yaalalabs/ak-common/aws//modules/dynamodb"
-  version = "0.8.1"
+  version = "0.9.1"
   count   = local.create_dynamodb_response_store_effective ? 1 : 0
   attributes = [
     { name = "request_id", type = "S" },
@@ -511,8 +601,18 @@ module "request_handler" {
   create_dynamodb_thread_table            = var.queue_mode ? false : var.create_dynamodb_thread_table
   dynamodb_thread_table_arn               = var.queue_mode ? null : local.dynamodb_thread_table_arn
   dynamodb_thread_table_name              = var.queue_mode ? null : local.dynamodb_thread_table_name
-  input_queue_arn                         = local.input_queue_arn
-  input_queue_url                         = local.input_queue_url
+  # Not nulled under queue_mode the way the thread wiring above is: an application can mount
+  # ScheduleRESTRequestHandler on this Lambda to serve the management routes, and scheduling
+  # requires queue_mode anyway.
+  account_id                     = data.aws_caller_identity.current.account_id
+  enable_scheduling              = var.enable_scheduling
+  schedule_group_name            = local.schedule_group_name
+  scheduler_execution_role_arn   = local.scheduler_execution_role_arn
+  create_dynamodb_schedule_table = var.create_dynamodb_schedule_table
+  dynamodb_schedule_table_arn    = local.dynamodb_schedule_table_arn
+  dynamodb_schedule_table_name   = local.dynamodb_schedule_table_name
+  input_queue_arn                = local.input_queue_arn
+  input_queue_url                = local.input_queue_url
   websocket_connections_dynamodb = local.websocket_api_enabled ? {
     table_name = module.websocket_connections[0].table_name
     table_arn  = module.websocket_connections[0].table_arn
@@ -567,6 +667,13 @@ module "agent_runner" {
   create_dynamodb_thread_table            = var.create_dynamodb_thread_table
   dynamodb_thread_table_arn               = local.dynamodb_thread_table_arn
   dynamodb_thread_table_name              = local.dynamodb_thread_table_name
+  account_id                              = data.aws_caller_identity.current.account_id
+  enable_scheduling                       = var.enable_scheduling
+  schedule_group_name                     = local.schedule_group_name
+  scheduler_execution_role_arn            = local.scheduler_execution_role_arn
+  create_dynamodb_schedule_table          = var.create_dynamodb_schedule_table
+  dynamodb_schedule_table_arn             = local.dynamodb_schedule_table_arn
+  dynamodb_schedule_table_name            = local.dynamodb_schedule_table_name
   redis_url                               = local.redis_url
   valkey_url                              = local.valkey_url
 

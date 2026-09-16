@@ -4,18 +4,23 @@ data "aws_vpc" "provided" {
 }
 
 locals {
-  vpc_id                    = var.vpc_id != null ? var.vpc_id : module.vpc[0].vpc_id
-  vpc_cidr                  = var.vpc_id != null ? data.aws_vpc.provided[0].cidr_block : var.vpc_cidr
-  subnet_ids                = var.vpc_id != null ? var.private_subnet_ids : module.vpc[0].private_subnet_ids
-  redis_url                 = var.create_redis_cluster == true ? module.redis[0].url : null
-  valkey_url                = var.create_valkey_cluster == true ? module.valkey[0].url : null
-  dynamodb_memory_table_arn = var.create_dynamodb_memory_table == true ? module.dynamodb_memory[0].table_arn : null
-  dynamodb_memory_table_name = var.create_dynamodb_memory_table == true ? module.dynamodb_memory[0].table_name : null
-  dynamodb_thread_table_arn  = var.create_dynamodb_thread_table == true ? module.dynamodb_thread[0].table_arn : null
-  dynamodb_thread_table_name = var.create_dynamodb_thread_table == true ? module.dynamodb_thread[0].table_name : null
-  prefix                     = "${var.product_alias}-${var.env_alias}-${var.module_name}"
-  service_name               = "${local.prefix}-service"
-  container_name             = "${local.prefix}-app"
+  vpc_id                       = var.vpc_id != null ? var.vpc_id : module.vpc[0].vpc_id
+  vpc_cidr                     = var.vpc_id != null ? data.aws_vpc.provided[0].cidr_block : var.vpc_cidr
+  subnet_ids                   = var.vpc_id != null ? var.private_subnet_ids : module.vpc[0].private_subnet_ids
+  redis_url                    = var.create_redis_cluster == true ? module.redis[0].url : null
+  valkey_url                   = var.create_valkey_cluster == true ? module.valkey[0].url : null
+  dynamodb_memory_table_arn    = var.create_dynamodb_memory_table == true ? module.dynamodb_memory[0].table_arn : null
+  dynamodb_memory_table_name   = var.create_dynamodb_memory_table == true ? module.dynamodb_memory[0].table_name : null
+  dynamodb_thread_table_arn    = var.create_dynamodb_thread_table == true ? module.dynamodb_thread[0].table_arn : null
+  dynamodb_thread_table_name   = var.create_dynamodb_thread_table == true ? module.dynamodb_thread[0].table_name : null
+  dynamodb_schedule_table_arn  = var.create_dynamodb_schedule_table == true ? aws_dynamodb_table.schedule_store[0].arn : null
+  dynamodb_schedule_table_name = var.create_dynamodb_schedule_table == true ? aws_dynamodb_table.schedule_store[0].name : null
+  schedule_group_name          = var.enable_scheduling ? aws_scheduler_schedule_group.schedules[0].name : null
+  schedule_group_arn           = var.enable_scheduling ? aws_scheduler_schedule_group.schedules[0].arn : null
+  scheduler_execution_role_arn = var.enable_scheduling ? aws_iam_role.scheduler_execution[0].arn : null
+  prefix                       = "${var.product_alias}-${var.env_alias}-${var.module_name}"
+  service_name                 = "${local.prefix}-service"
+  container_name               = "${local.prefix}-app"
 
   # True for both WebSocket modes: "async" (full-response) and "stream" (chunk-per-message).
   is_websocket_mode = contains(["async", "stream"], var.execution_mode)
@@ -64,7 +69,7 @@ locals {
 
 module "vpc" {
   source               = "yaalalabs/ak-common/aws//modules/vpc"
-  version              = "0.8.1"
+  version              = "0.9.1"
   count                = var.vpc_id == null ? 1 : 0
   vpc_cidr             = var.vpc_cidr
   public_subnet_cidrs  = var.public_subnet_cidrs
@@ -76,7 +81,7 @@ module "vpc" {
 
 module "redis" {
   source        = "yaalalabs/ak-common/aws//modules/redis"
-  version       = "0.8.1"
+  version       = "0.9.1"
   count         = var.create_redis_cluster == true ? 1 : 0
   env_alias     = var.env_alias
   module_name   = var.module_name
@@ -88,7 +93,7 @@ module "redis" {
 
 module "valkey" {
   source        = "yaalalabs/ak-common/aws//modules/valkey"
-  version       = "0.8.1"
+  version       = "0.9.1"
   count         = var.create_valkey_cluster == true ? 1 : 0
   env_alias     = var.env_alias
   module_name   = var.module_name
@@ -101,7 +106,7 @@ module "valkey" {
 module "docker_image" {
   count         = 1
   source        = "yaalalabs/ak-common/aws//modules/ecr"
-  version       = "0.8.1"
+  version       = "0.9.1"
   env_alias     = var.env_alias
   module_name   = var.module_name
   product_alias = var.product_alias
@@ -112,7 +117,7 @@ module "docker_image" {
 module "agent_runner_docker_image" {
   count         = var.queue_mode && var.agent_runner.package_path != null ? 1 : 0
   source        = "yaalalabs/ak-common/aws//modules/ecr"
-  version       = "0.8.1"
+  version       = "0.9.1"
   env_alias     = var.env_alias
   module_name   = "${var.module_name}-runner"
   product_alias = var.product_alias
@@ -121,7 +126,7 @@ module "agent_runner_docker_image" {
 
 module "dynamodb_memory" {
   source  = "yaalalabs/ak-common/aws//modules/dynamodb"
-  version = "0.8.1"
+  version = "0.9.1"
   count   = var.create_dynamodb_memory_table == true ? 1 : 0
   attributes = [
     { name = "session_id", type = "S" },
@@ -139,7 +144,7 @@ module "dynamodb_memory" {
 
 module "dynamodb_thread" {
   source  = "yaalalabs/ak-common/aws//modules/dynamodb"
-  version = "0.8.1"
+  version = "0.9.1"
   count   = var.create_dynamodb_thread_table == true ? 1 : 0
   attributes = [
     { name = "session_id", type = "S" },

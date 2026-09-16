@@ -4,7 +4,7 @@ data "aws_region" "current" {}
 
 module "input_queue" {
   source  = "yaalalabs/ak-common/aws//modules/sqs"
-  version = "0.8.1"
+  version = "0.9.1"
 
   product_alias        = var.product_alias
   env_alias            = var.env_alias
@@ -15,7 +15,7 @@ module "input_queue" {
   is_production        = var.env_alias == "prod"
 
   fifo_queue                  = true
-  content_based_deduplication = false
+  content_based_deduplication = var.queue_config.input_queue_content_based_deduplication
   deduplication_scope         = "messageGroup"
   fifo_throughput_limit       = "perMessageGroupId"
 
@@ -40,7 +40,7 @@ module "input_queue" {
 
 module "output_queue" {
   source  = "yaalalabs/ak-common/aws//modules/sqs"
-  version = "0.8.1"
+  version = "0.9.1"
 
   product_alias        = var.product_alias
   env_alias            = var.env_alias

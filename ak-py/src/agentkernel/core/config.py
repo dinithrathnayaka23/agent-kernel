@@ -200,6 +200,20 @@ class _TelegramConfig(BaseModel):
     api_version: str = Field(default="bot", description="Telegram Bot API version prefix")
 
 
+class _TeamsConfig(BaseModel):
+    agent: str = Field(default="", description="Default agent to use for Microsoft Teams interactions")
+    agent_acknowledgement: str = Field(
+        default="",
+        description="The message to send as an acknowledgement when a Teams message is received",
+    )
+    app_id: str = Field(default="", description="Azure Bot / Entra ID application (client) ID")
+    app_password: str = Field(default="", description="Azure Bot / Entra ID application client secret")
+    tenant_id: str = Field(
+        default="",
+        description="Entra ID tenant that owns the bot's app registration. Required only for a single-tenant registration, whose channel tokens must be issued by its own tenant; leave empty for a multi-tenant bot. Also the fallback tenant for the app-only token used to download attachments whose URL is not pre-authenticated, when the incoming activity carries none",
+    )
+
+
 class _GmailConfig(BaseModel):
     agent: str = Field(default="", description="Default agent to use for Gmail")
     token_file: str = Field(default="token.pickle", description="Path to store OAuth2 token")
@@ -240,7 +254,11 @@ class _MultimodalConfig(BaseModel):
     )
     analysis_model: str = Field(
         default="gpt-4o",
-        description="LiteLLM model used by the analyze_attachments tool when the agent requests a full analysis of an attachment",
+        description=(
+            "LiteLLM model used by the analyze_attachments tool when the agent requests a full analysis of an attachment; "
+            "a remote image is handed to it as a fetchable image URL, so the model must be able to fetch that address, "
+            "while other remote attachment types are only named by their address"
+        ),
     )
     redis: Optional[_MultimodalStorageRedisConfig] = None
     dynamodb: Optional[_MultimodalStorageDynamoDBConfig] = None
@@ -296,6 +314,68 @@ class _ThreadStoreConfig(BaseModel):
     dynamodb: Optional[_ThreadDynamoDBConfig] = None
     firestore: Optional[_ThreadFirestoreConfig] = None
     cosmosdb: Optional[_ThreadCosmosDBConfig] = None
+
+
+# Connection details only, and Terraform-provisioned: the eventbridge provider requires all three.
+class _ScheduleEventBridgeConfig(BaseModel):
+    group_name: Optional[str] = Field(default=None, description="EventBridge Scheduler schedule-group name the schedules are created in")
+    role_arn: Optional[str] = Field(
+        default=None, description="Execution role ARN EventBridge Scheduler assumes to deliver triggers to the input queue"
+    )
+    queue_arn: Optional[str] = Field(default=None, description="Input queue ARN used as the schedule target")
+
+
+class _ScheduleProviderConfig(BaseModel):
+    type: str = Field(
+        default="local",
+        description="Schedule provider: a built-in short name (local, eventbridge) or a dotted path to a ScheduleProvider subclass",
+    )
+    eventbridge: Optional[_ScheduleEventBridgeConfig] = None
+
+
+class _ScheduleStoreRedisConfig(_RedisConfig):
+    # Unlike threads, schedules carry no default expiry: a task that silently disappeared
+    # would stop firing with no audit trail.
+    ttl: int = Field(default=0, description="Scheduled task TTL in seconds (0 disables)")
+    prefix: str = Field(default="ak:schedule:", description="Key prefix for Redis scheduled-task storage")
+
+
+class _ScheduleStoreValkeyConfig(_ValkeyConfig):
+    ttl: int = Field(default=0, description="Scheduled task TTL in seconds (0 disables)")
+    prefix: str = Field(default="ak:schedule:", description="Key prefix for Valkey scheduled-task storage")
+
+
+class _ScheduleStoreDynamoDBConfig(_DynamoDBConfig):
+    table_name: str = Field(
+        default="ak-agent-schedules",
+        description="DynamoDB table name for scheduled-task storage. Table should have a partition key named 'task_id' (S) and no sort key",
+    )
+    ttl: int = Field(default=0, description="DynamoDB item TTL in seconds (0 disables)")
+
+
+class _ScheduleStoreConfig(BaseModel):
+    type: str = Field(
+        default="in_memory",
+        description="Scheduled task store backend: a built-in short name (in_memory, redis, valkey, dynamodb) or a dotted path to a ScheduleStore subclass",
+    )
+    redis: Optional[_ScheduleStoreRedisConfig] = None
+    valkey: Optional[_ScheduleStoreValkeyConfig] = None
+    dynamodb: Optional[_ScheduleStoreDynamoDBConfig] = None
+
+
+class _ScheduleConfig(BaseModel):
+    """Configuration for the scheduling capability (trigger provider, task store, tool scoping).
+    The presence of the block is the enablement signal; its defaults (local provider,
+    in_memory store) make a bare 'schedule:' block work for local development."""
+
+    provider: _ScheduleProviderConfig = Field(
+        default_factory=_ScheduleProviderConfig, description="Backend that fires the triggers at their scheduled times"
+    )
+    store: _ScheduleStoreConfig = Field(default_factory=_ScheduleStoreConfig, description="Backend that persists the scheduled task records")
+    agents: Optional[list[str]] = Field(
+        default=None,
+        description="Agent names the schedule tools and system-prompt guidance attach to; omitted = all agents",
+    )
 
 
 class _TraceConfig(BaseModel):
@@ -459,12 +539,13 @@ class _NatsQueueConfig(BaseModel):
 
 
 class _QueuesConfig(BaseModel):
-    type: Optional[str] = Field(
-        default=None,
+    type: str = Field(
         description=(
             "Queue transport: in_memory | sqs | kafka | nats, or a dotted path to a QueueTransport "
-            "subclass. When unset, a configured input.url implies sqs (pre-#495 compatibility); "
-            "otherwise in_memory."
+            "subclass. Mandatory whenever this block is declared: the transport decides the "
+            "deployment topology, so it is declared by the application rather than inferred from "
+            "whichever queue coordinates a deployment happens to inject. Omitting the whole block "
+            "leaves the single-process 'in_memory' transport."
         ),
     )
     input: _InputQueueConfig = Field(default_factory=_InputQueueConfig, description="Input queue configuration for queue execution mode")
@@ -502,7 +583,13 @@ class _ExecutionConfig(BaseModel):
         default=None,
         description="Execution mode: rest_sync for synchronous REST, rest_async for asynchronous REST, stream for token streaming (WebSocket serverless or containerized direct streaming)",
     )
-    queues: Optional[_QueuesConfig] = Field(default_factory=_QueuesConfig, description="Queue URLs for async execution mode")
+    # The default carries the transport type explicitly: `type` is mandatory inside a declared
+    # queues block, and a config that declares no block at all still runs single-process on the
+    # in-process pipeline, whose topology needs no queue coordinates.
+    queues: Optional[_QueuesConfig] = Field(
+        default_factory=lambda: _QueuesConfig(type="in_memory"),
+        description="Queue transport and queue settings for queue-based execution",
+    )
     response_store: Optional[_ResponseStoreConfig] = Field(
         default=None,
         description="Response storage configuration for async execution mode",
@@ -578,6 +665,24 @@ class _SandboxKubernetesConfig(BaseModel):
     image: str = Field(default="python:3.12-slim", description="Container image used for launched sandbox pods")
     attach_to: Optional[str] = Field(default=None, description="Existing '<namespace>/<pod>' to exec into instead of launching a pod (mode 3)")
     kubeconfig: Optional[str] = Field(default=None, description="Path to a kubeconfig file; None uses in-cluster or default configuration")
+    service_account: Optional[str] = Field(
+        default=None,
+        description="ServiceAccount assigned to sandbox pods; bind it to the (read-only) RBAC role that is the execution's security boundary",
+    )
+    image_pull_secrets: List[str] = Field(default_factory=list, description="imagePullSecrets names for the sandbox pod")
+    labels: Dict[str, str] = Field(default_factory=dict, description="Extra labels merged onto sandbox pods")
+    node_selector: Dict[str, str] = Field(default_factory=dict, description="nodeSelector for sandbox pods")
+    env: Dict[str, str] = Field(default_factory=dict, description="Environment variables set in the sandbox container")
+    security_context: Dict[str, Any] = Field(default_factory=dict, description="Pod-level securityContext overlay")
+    container_security_context: Dict[str, Any] = Field(
+        default_factory=dict, description="Container-level securityContext overlay (over the hardened defaults)"
+    )
+    network_policy: bool = Field(
+        default=False,
+        description="Create per-pod NetworkPolicies for deny/allowlist egress and declare policy_network; "
+        "set only when the cluster CNI enforces NetworkPolicy",
+    )
+    create_timeout: float = Field(default=120.0, description="Seconds to wait for a sandbox pod to reach Running before failing provisioning")
 
 
 class _SandboxEC2SSMConfig(BaseModel):
@@ -588,25 +693,35 @@ class _SandboxEC2SSMConfig(BaseModel):
 class _ExecutionBrokerConfig(BaseModel):
     flavor: str = Field(
         default="thread",
-        description="Broker flavor: 'embedded' | 'thread' (in-process, available now) | a dotted path to an ExecutionBroker subclass. The AWS 'sqs' flavor is planned in a later iteration.",
+        description="Broker flavor: 'embedded' | 'thread' (in-process) | 'queue' (transport-backed, #503) | a dotted path to an ExecutionBroker subclass",
     )
-    wait_timeout: float = Field(default=60.0, description="Max seconds a synchronous wait blocks before promotion to a task (0 = always promote)")
+    wait_timeout: float = Field(
+        default=60.0,
+        description="Max seconds a synchronous wait blocks before promotion to a task (0 = always promote); "
+        "on the 'queue' flavor this also bounds waits submitted without an explicit wait",
+    )
+    wait_poll_interval: float = Field(
+        default=0.5, description="Seconds between response-store polls while a 'queue'-flavor caller waits synchronously"
+    )
     inline_payload_max_bytes: int = Field(
-        default=131072, description="Results larger than this are offloaded to the object store instead of returned inline"
+        default=131072,
+        description="On the 'queue' flavor: requests larger than this are rejected at submit, and result output beyond it is truncated with a notice",
     )
-    response_ttl: int = Field(default=86400, description="TTL in seconds for stored task completions")
+    response_ttl: int = Field(default=86400, description="TTL in seconds for stored task completions and broker-side session-inventory records")
     sweep_interval: int = Field(default=300, description="Interval in seconds between broker-side idle-session sweeps")
-    request_queue_url: Optional[str] = Field(default=None, description="SQS request queue URL for the 'sqs' flavor (terraform output)")
-    object_store_bucket: Optional[str] = Field(
-        default=None, description="Object store bucket for offloaded payloads for the 'sqs' flavor (terraform output)"
-    )
     worker_timeout_ceiling: Optional[float] = Field(
         default=None,
         description="Max effective execution timeout (s) the provisioned worker supports; terraform output — 840 in serverless mode, null in server_based. None = no ceiling.",
     )
+    queue: Optional[_QueuesConfig] = Field(
+        default=None,
+        description="Sandbox broker queues for the 'queue' flavor; reuses the execution.queues shape "
+        "(input carries execution requests to the worker, output carries completions back to the response store)",
+    )
     response_store: Optional[_ResponseStoreConfig] = Field(
         default=None,
-        description="Response storage configuration for the 'sqs' flavor; reuses the execution response store model",
+        description="Response storage for the 'queue' flavor (required by it); reuses the execution response store model. "
+        "Its ttl fields are overridden by response_ttl, and retry_count/delay are unused (queue-flavor waits are deadline-driven)",
     )
 
 
@@ -710,7 +825,37 @@ class _SandboxConfig(BaseModel):
         return self
 
 
+class _AGUIStateConfig(BaseModel):
+    """Opt-in for the AG-UI shared-state tools (`get_agui_state` / `update_agui_state`)."""
+
+    enabled: bool = Field(default=False, description="Expose the AG-UI state tools to agents")
+    agents: Optional[list[str]] = Field(default=None, description="Agent names the tools attach to; omitted = all agents")
+
+
+class _AGUIClientContextConfig(BaseModel):
+    """Opt-in for the read-only AG-UI client-context tools (forwarded props and context)."""
+
+    enabled: bool = Field(
+        default=False,
+        description="Expose the read-only AG-UI client-context tools (forwarded props and context) to agents",
+    )
+    agents: Optional[list[str]] = Field(default=None, description="Agent names the tools attach to; omitted = all agents")
+
+
+class _AGUIConfig(BaseModel):
+    """Parameterizes a mounted AGUIRequestHandler. Mounting the handler is what enables AG-UI;
+    this block never switches the surface on. The two nested blocks do switch on agent-facing tools."""
+
+    agents: Optional[list[str]] = Field(default=None, description="Agent names reachable over AG-UI; omitted = all streaming-capable agents")
+    prefix: str = Field(default="/agui", description="Route prefix for the AG-UI surface")
+    default_agent: Optional[str] = Field(default=None, description="Agent served on the bare prefix route")
+    state: _AGUIStateConfig = Field(default_factory=_AGUIStateConfig)
+    client_context: _AGUIClientContextConfig = Field(default_factory=_AGUIClientContextConfig)
+
+
 class AKConfig(YamlBaseSettingsModified):
+    """Root configuration, loaded from config.yaml and `AK_`-prefixed environment variables."""
+
     session: _SessionStoreConfig = Field(
         description="Agent session / memory related configurations",
         default_factory=_SessionStoreConfig,
@@ -727,11 +872,18 @@ class AKConfig(YamlBaseSettingsModified):
     messenger: _MessengerConfig = Field(description="Facebook Messenger related configurations", default_factory=_MessengerConfig)
     instagram: _InstagramConfig = Field(description="Instagram Business API related configurations", default_factory=_InstagramConfig)
     telegram: _TelegramConfig = Field(description="Telegram Bot related configurations", default_factory=_TelegramConfig)
+    teams: _TeamsConfig = Field(description="Microsoft Teams related configurations", default_factory=_TeamsConfig)
     gmail: _GmailConfig = Field(description="Gmail related configurations", default_factory=_GmailConfig)
     multimodal: _MultimodalConfig = Field(description="Multimodal attachment memory configurations", default_factory=_MultimodalConfig)
     thread: Optional[_ThreadStoreConfig] = Field(
         default=None,
         description="Conversation Thread Support configurations (store backend, naming). The feature is served by mounting AgentThreadRequestHandler; this block only parameterizes it.",
+    )
+
+    agui: _AGUIConfig = Field(description="AG-UI integration configurations", default_factory=_AGUIConfig)
+    schedule: Optional[_ScheduleConfig] = Field(
+        default=None,
+        description="Scheduling capability configurations (trigger provider, task store, tool scoping). Absent = the capability is disabled.",
     )
 
     trace: _TraceConfig = Field(description="Tracing related configurations", default_factory=_TraceConfig)

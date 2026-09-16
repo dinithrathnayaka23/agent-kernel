@@ -43,7 +43,7 @@ Most agent frameworks help you build a *prototype*. **Agent Kernel is the platfo
 | 🧠 **Stateful & Knowledge-Aware** | Pluggable session stores (Redis, Valkey, DynamoDB, Cosmos DB) + knowledge bases (ChromaDB, Neo4j, Starburst). |
 | 💬 **Channels Built-In** | Slack, WhatsApp, Teams, Telegram, Gmail, Messenger, Instagram — out of the box. |
 | 🔍 **Production Observability** | LangFuse, OpenLLMetry, and Pydantic Logfire tracing wired in. Every agent, tool, and LLM call — visible. |
-| 🤝 **Open Standards** | Native **MCP** (Model Context Protocol) and **A2A** (Agent-to-Agent) support. |
+| 🤝 **Open Standards** | Native **MCP** (Model Context Protocol), **A2A** (Agent-to-Agent), and **AG-UI** (streamed event protocol for agent-facing frontends) support. |
 | 🆓 **Apache 2.0** | No licensing fees. No vendor lock-in. Production-ready open source. |
 
 > ⭐ **If Agent Kernel is solving real problems for you, please star the repo — it's the single best way to help us grow.**
@@ -89,7 +89,7 @@ if __name__ == "__main__":
     CLI.main()
 ```
 
-That's it. Same code deploys to AWS Lambda, ECS, Azure Functions, or Container Apps with a single Terraform module. 👉 [Get Started](https://kernel.yaala.ai/docs)
+That's it. Same code deploys to AWS Lambda, ECS, Azure Functions, or Container Apps with a single Terraform module, or to any Kubernetes cluster with the [Helm chart](#kubernetes--on-prem-with-helm). 👉 [Get Started](https://kernel.yaala.ai/docs)
 
 ---
 
@@ -118,11 +118,22 @@ Enterprises can't ship agents they can't audit. Agent Kernel makes compliance th
 Let agents run code and shell commands in an isolated, permission-bounded environment — the platform handles it, your agent code stays clean.
 
 - **Enable it in config** — agents automatically gain code/command/file tools and the usage guidance is injected into their prompt.
-- **Pluggable providers** — `local_subprocess` (dev), `docker` (container-isolated), `e2b` (managed micro-VMs), `daytona` (cloud containers), and `ec2_ssm` (attach to an existing EC2 instance) today, with `kubernetes` and other cloud-native backends planned; bring your own via a dotted path.
+- **Pluggable providers** — `local_subprocess` (dev), `docker` (container-isolated), `kubernetes` (pod per sandbox, RBAC as the boundary), `e2b` (managed micro-VMs), `daytona` (cloud containers), and `ec2_ssm` (attach to an existing EC2 instance); bring your own via a dotted path.
 - **Workload profiles** — per-call, per-session, or shared lifetimes; each with its own permission policy (network egress, filesystem, CPU/memory, timeout) enforced fail-closed.
 - **Per-user identity** — run sandboxed code under the invoking user's identity, not one shared agent identity, via a pluggable principal resolver.
 
 [Learn more →](https://kernel.yaala.ai/docs/advanced/sandbox)
+
+### ⏰ Deferred & Recurring Chats
+
+Let a chat run later, or on a schedule — the platform owns the timers, the persistence, and the management API.
+
+- **Enable it in config** — a `schedule` block turns on deferring and the agent tools with no code change; mount `ScheduleRESTRequestHandler` when you also want the management routes.
+- **One creation path, three callers** — a `schedule` block on any chat request (acknowledged with HTTP 202), the agent's own `create_schedule` tool, or a direct `ScheduleManager` call.
+- **Pluggable timers and stores** — `local` (in-process, for development) or AWS EventBridge Scheduler for production; task records in memory, Redis, Valkey, or DynamoDB.
+- **Managed over REST** — list, read, amend, pause and cancel via `/api/v1/schedules`, scoped to the owning user by a pluggable `Authoriser`.
+
+[Learn more →](https://kernel.yaala.ai/docs/advanced/scheduling)
 
 ### 🧠 Memory, Sessions & Knowledge Bases
 
@@ -130,6 +141,7 @@ Let agents run code and shell commands in an isolated, permission-bounded enviro
 |---|---|
 | **Session / Memory** | In-memory, Redis, Valkey (AWS), DynamoDB (AWS), Cosmos DB (Azure), Firestore (GCP) |
 | **Conversation Threads** | Persistent, named threads keyed by `session_id` — in-memory, Redis, Valkey, DynamoDB (AWS), Cosmos DB (Azure), Firestore (GCP) |
+| **Scheduled Tasks** | Deferred and recurring chat execution — in-memory, Redis, Valkey, DynamoDB (AWS) task stores; local in-process or AWS EventBridge Scheduler timers |
 | **Vector Knowledge** | ChromaDB |
 | **Graph Knowledge** | Neo4j |
 | **SQL Analytics** | Starburst Galaxy (Trino) |
@@ -145,6 +157,7 @@ Build once. Ship to every channel your users live on. No bespoke bot code.
 
 - **MCP (Model Context Protocol)** — Connect agents to external tools, data sources, and services. Optionally expose your agents *as* MCP tools.
 - **A2A (Agent-to-Agent)** — Native message passing, handoffs, and coordination between agents in a shared ecosystem.
+- **AG-UI** — Stream any agent's run (text, tool calls, reasoning, shared state) to a compliant AG-UI frontend, e.g. [CopilotKit](https://docs.copilotkit.ai).
 
 ### ⚡ Built-In Execution Modes
 
@@ -156,14 +169,30 @@ Build once. Ship to every channel your users live on. No bespoke bot code.
 
 ## ☁️ Deploy Anywhere
 
-Same agent code. Pick your runtime. Full Terraform modules included.
+Same agent code. Pick your runtime. Full Terraform modules and a Helm chart included.
 
 | Cloud | Serverless | Containerized |
 |---|---|---|
 | **AWS** | [Lambda](https://registry.terraform.io/modules/yaalalabs/ak-serverless/aws) | [ECS / Fargate](https://registry.terraform.io/modules/yaalalabs/ak-containerized/aws) |
 | **Azure** | [Functions](https://registry.terraform.io/modules/yaalalabs/ak-serverless/azurerm) | [Container Apps](https://registry.terraform.io/modules/yaalalabs/ak-containerized/azurerm) |
 | **GCP** | [Cloud Run Serverless](https://github.com/yaalalabs/agent-kernel/tree/develop/ak-deployment/ak-gcp/serverless) | [Cloud Run Containerized](https://github.com/yaalalabs/agent-kernel/tree/develop/ak-deployment/ak-gcp/containerized) |
-| **On-Prem / Kubernetes** | ✅ Docker image | [Helm chart](https://github.com/yaalalabs/agent-kernel/tree/develop/ak-deployment/ak-k8s) (baremetal + EKS, Kafka/NATS queue mode, KEDA autoscaling) |
+| **On-Prem / Kubernetes** | N/A | [Helm chart](https://github.com/yaalalabs/agent-kernel/tree/develop/ak-deployment/ak-k8s) (baremetal + EKS, Kafka/NATS queue mode, KEDA autoscaling) |
+
+### Kubernetes / On-Prem with Helm
+
+The chart is published as an OCI artifact at
+[`ghcr.io/yaalalabs/charts/agent-kernel`](https://github.com/yaalalabs/agent-kernel/pkgs/container/charts%2Fagent-kernel).
+Install it with Helm (the `docker pull` command GitHub shows on the package page does not apply to charts):
+
+```bash
+helm pull oci://ghcr.io/yaalalabs/charts/agent-kernel --version 0.9.1 --untar   # unpacks the flavor values files
+helm install ak oci://ghcr.io/yaalalabs/charts/agent-kernel --version 0.9.1 \
+  -f agent-kernel/values-dev.yaml \
+  --set ioHandler.image.repository=<io image> \
+  --set agentRunner.image.repository=<runner image> --set image.tag=<tag>
+```
+
+Flavors are values files over one set of templates: `values-dev.yaml` for a local cluster, `values-baremetal.yaml` for self-hosted, `values-eks.yaml` for AWS EKS. Valkey and NATS ship as bundled dependencies, and every image the chart references is listed in the `images.txt` attached to each release for air-gapped mirroring. Full guide: [On-Prem / Kubernetes Deployment](https://kernel.yaala.ai/docs/deployment/onprem-kubernetes).
 
 ---
 
@@ -179,10 +208,10 @@ ak skill install
 |---|---|
 | `ak-init` | Scaffold a new project — any framework, any deployment mode |
 | `ak-build` | Add tools, agents, handoffs — context-aware and framework-specific |
-| `ak-add-capabilities` | Wire in guardrails, tracing, sessions, MCP, A2A, hooks, multimodal, conversation threads |
+| `ak-add-capabilities` | Wire in guardrails, tracing, sessions, MCP, A2A, AG-UI, hooks, multimodal, conversation threads, sandbox, scheduled tasks |
 | `ak-add-integration` | Slack, WhatsApp, Messenger, Instagram, Telegram, Gmail |
 | `ak-cloud-deploy` | AWS Lambda, ECS, Azure Functions, Container Apps, GCP Cloud Run with full Terraform |
-| `ak-test` | Fuzzy, judge, and fallback test modes + a debugging playbook |
+| `ak-test` | Score, llm, and fallback test modes (pluggable evaluators) + a debugging playbook |
 
 See the [`use-cases/`](use-cases/) directory for complete end-to-end examples built using these skills — each starting from a `SPEC.md` and generating a fully deployed agent.
 
@@ -194,7 +223,7 @@ See the [`use-cases/`](use-cases/) directory for complete end-to-end examples bu
 pytest tests/
 ```
 
-Built-in fuzzy, semantic, and fallback comparison modes. CI/CD ready. Test agent behavior, not just code.
+Built-in score, llm, and fallback comparison modes, backed by a pluggable evaluator (DeepEval by default, or bring your own). CI/CD ready. Test agent behavior, not just code.
 
 ---
 

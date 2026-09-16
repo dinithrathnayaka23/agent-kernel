@@ -5,14 +5,15 @@ description: >
   Kubernetes cluster (on-prem, baremetal, EKS) using the official Helm chart.
   Supports serverless and containerized modes for all three clouds. AWS supports
   execution modes (rest_sync, rest_async, async, stream), queue-based scalable processing,
-  and custom API Gateway authorizers. GCP supports Cloud Run serverless (scale-to-zero)
+  custom API Gateway authorizers, and EventBridge Scheduler for scheduled tasks.
+  GCP supports Cloud Run serverless (scale-to-zero)
   and containerized (always-on) with Redis or Firestore session backends. Kubernetes runs
   the queue pipeline over NATS JetStream, Kafka, or SQS with KEDA autoscaling and an
   optional WebSocket gateway tier.
 license: Apache-2.0
 metadata:
   author: yaalalabs
-  version: "0.8.1"
+  version: "0.9.1"
   category: user
 ---
 
@@ -59,11 +60,12 @@ Use official modules:
 - GCP serverless: `yaalalabs/ak-serverless/google`
 - GCP containerized: `yaalalabs/ak-containerized/google`
 
-Use current module version (`0.8.1`) unless user requests another.
+Use current module version (`0.9.1`) unless user requests another.
 
 Kubernetes does not use Terraform: the Helm chart lives at `ak-deployment/ak-k8s/chart` in the
 Agent Kernel repository and is published as an OCI artifact
-(`oci://ghcr.io/yaalalabs/charts/agent-kernel`).
+(`oci://ghcr.io/yaalalabs/charts/agent-kernel`, versioned with each release). Install the
+published chart, as in the Kubernetes section below, not a repository checkout.
 
 All modules are provider-agnostic: they declare `required_providers` but do not configure them internally. Configure each provider (`aws`/`docker`, `azurerm`, or `google`/`google-beta`/`docker`) in the root module and pass it explicitly via the module's `providers = { ... }` argument, as shown in the examples below. Azure's containerized module builds and pushes its image via a nested submodule with its own internal `docker` provider, so no `docker` provider needs to be configured or passed by the caller there.
 
@@ -87,7 +89,7 @@ When the user selects a session store, always update both app dependencies and `
 
 ```toml
 dependencies = [
-  "agentkernel[openai,api,redis]>=0.8.1"
+  "agentkernel[openai,api,redis]>=0.9.1"
 ]
 ```
 
@@ -114,7 +116,7 @@ OSS engine. Agent Kernel treats it as a first-class session and response store b
 
 ```toml
 dependencies = [
-  "agentkernel[openai,api,aws,valkey]>=0.8.1"
+  "agentkernel[openai,api,aws,valkey]>=0.9.1"
 ]
 ```
 
@@ -142,7 +144,7 @@ session:
 
 ```toml
 dependencies = [
-  "agentkernel[openai,api,aws]>=0.8.1"
+  "agentkernel[openai,api,aws]>=0.9.1"
 ]
 ```
 
@@ -163,7 +165,7 @@ session:
 
 ```toml
 dependencies = [
-  "agentkernel[openai,api,azure]>=0.8.1"
+  "agentkernel[openai,api,azure]>=0.9.1"
 ]
 ```
 
@@ -185,7 +187,7 @@ session:
 
 ```toml
 dependencies = [
-  "agentkernel[openai,api,gcp]>=0.8.1"
+  "agentkernel[openai,api,gcp]>=0.9.1"
 ]
 ```
 
@@ -228,6 +230,73 @@ Setting the Terraform flag *without* declaring `thread.type` in `config.yaml` si
 threads on the non-durable in-memory backend (any `AK_THREAD__*` var materialises `AKConfig.thread`,
 but `type` still defaults to `in_memory`) — always pair the flag with the matching `thread.type`.
 
+### Deploying Scheduled Tasks
+
+Scheduled tasks (`ak-add-capabilities`) deploy on the same two-step split: the app declares
+`schedule.provider.type` and `schedule.store.type` in `config.yaml`, and Terraform provisions the
+backends, injecting only the coordinates. Terraform never sets `AK_SCHEDULE__PROVIDER__TYPE` or
+`AK_SCHEDULE__STORE__TYPE`.
+
+**Scheduling requires queue mode** — occurrences are delivered into the input queue, so
+`queue_mode = true` is mandatory on AWS. `enable_scheduling` without it is rejected.
+
+- **AWS (serverless + containerized)**: `enable_scheduling = true` provisions an EventBridge Scheduler
+  schedule group and the execution role Scheduler assumes to deliver triggers to the input queue,
+  grants both the request/REST role and the agent-runner role `scheduler:CreateSchedule|UpdateSchedule|DeleteSchedule|GetSchedule`
+  plus `iam:PassRole` on that role, and injects
+  `AK_SCHEDULE__PROVIDER__EVENTBRIDGE__GROUP_NAME`, `__ROLE_ARN` and `__QUEUE_ARN`. It also flips the
+  input queue to content-based deduplication, because Scheduler cannot set a
+  `MessageDeduplicationId` (application senders are unaffected — their explicit id takes precedence).
+- **AWS (serverless + containerized)**: `create_dynamodb_schedule_table = true` provisions a DynamoDB
+  table (partition `task_id`, no sort key, no GSI, TTL on `expiry_time`) and injects
+  `AK_SCHEDULE__STORE__DYNAMODB__TABLE_NAME`.
+- **Redis / Valkey task store**: no dedicated Terraform flag — reuse whatever `create_redis_cluster` /
+  `create_valkey_cluster` already provisions and declare `schedule: {store: {type: redis}}` (or
+  `valkey`) with the cluster URL in `config.yaml`.
+- **Azure / GCP**: no scheduling provider ships for these clouds yet. The `local` provider only works
+  in a single always-on process with the `in_memory` transport and store, which no cloud deployment
+  mode gives you.
+
+```hcl
+queue_mode                     = true
+enable_scheduling              = true
+create_dynamodb_schedule_table = true
+```
+
+```yaml
+schedule:
+  provider:
+    type: eventbridge
+  store:
+    type: dynamodb
+```
+
+Setting the Terraform flags *without* declaring both types in `config.yaml` silently leaves scheduling
+on the in-process `local` provider and `in_memory` store (any `AK_SCHEDULE__*` var materialises
+`AKConfig.schedule`, but the types still default), while the provisioned group and table sit unused —
+always pair the flags with the matching types. The reverse is safe: declaring the types without the
+flags fails at startup with an `AKConfigError` on the missing `group_name` / `role_arn` / `queue_arn`.
+
+The blocks above enable deferring and the agent tools. The `/api/v1/schedules` management routes are
+**not** mounted from config — on ECS queue mode, pass the handler to the IO container's entrypoint,
+where it is served alongside the queue-producing chat route:
+
+```python
+# app_rest_service.py
+from agentkernel.aws import ECSIOHandler
+from agentkernel.schedule import ScheduleRESTRequestHandler
+
+if __name__ == "__main__":
+    # add authoriser=... to scope listings to the caller; without one the routes are open
+    ECSIOHandler.run(handlers=[ScheduleRESTRequestHandler()])
+```
+
+Remember to list the schedule paths in `gateway_endpoints` — the gateway only proxies paths it is
+told about.
+
+New outputs on both AWS stacks (null unless the matching flag is set): `schedule_group_name`,
+`schedule_group_arn`, `scheduler_execution_role_arn`, `schedule_table_name`, `schedule_table_arn`.
+
 ## AWS Serverless (Lambda + API Gateway)
 
 ### Agent Code Pattern
@@ -253,7 +322,7 @@ This is the single-Lambda pattern: use `request_handler` plus any `gateway_endpo
 ```hcl
 module "serverless_agents" {
   source  = "yaalalabs/ak-serverless/aws"
-  version = "0.8.1"
+  version = "0.9.1"
 
   product_alias        = var.product_alias
   env_alias            = var.env_alias
@@ -307,7 +376,7 @@ Each Lambda can use one of three `package_type` values:
 ```hcl
 module "serverless_agents" {
   source  = "yaalalabs/ak-serverless/aws"
-  version = "0.8.1"
+  version = "0.9.1"
 
   product_alias      = var.product_alias
   env_alias          = var.env_alias
@@ -320,6 +389,10 @@ module "serverless_agents" {
 
   create_dynamodb_memory_table   = true
   create_dynamodb_response_store = true
+
+  # Uncomment with `schedule: {provider: {type: eventbridge}, store: {type: dynamodb}}` in config.yaml
+  # enable_scheduling              = true
+  # create_dynamodb_schedule_table = true
 
   request_handler = {
     module_name          = "rqst-hdlr"
@@ -446,7 +519,7 @@ session:
 
 ```toml
 dependencies = [
-  "agentkernel[openai,api,aws]>=0.8.1"  # include 'redis' if using Redis, or 'valkey' if using Valkey session/response store
+  "agentkernel[openai,api,aws]>=0.9.1"  # include 'redis' if using Redis, or 'valkey' if using Valkey session/response store
 ]
 ```
 
@@ -459,7 +532,7 @@ This follows the current websocket example shape: the request handler stays on t
 ```hcl
 module "serverless_agents" {
   source  = "yaalalabs/ak-serverless/aws"
-  version = "0.8.1"
+  version = "0.9.1"
 
   product_alias        = var.product_alias
   env_alias            = var.env_alias
@@ -603,20 +676,20 @@ session:
 
 ```toml
 dependencies = [
-  "agentkernel[openai,api,aws,redis,auth]>=0.8.1"
+  "agentkernel[openai,api,aws,redis,auth]>=0.9.1"
 ]
 ```
 
 ### D) WebSocket Token Streaming (`stream`)
 
-Use this when the client should receive each generated token as soon as it is produced, instead of waiting for the full response.
+Use this when the client should receive each stream event as soon as it is produced, instead of waiting for the full response.
 
 Same Terraform shape as WebSocket Async (`request_handler`, `agent_runner`, `response_handler`, `ws_connection_handler`, `ws_routes`) — only `execution_mode` changes:
 
 ```hcl
 module "serverless_agents" {
   source  = "yaalalabs/ak-serverless/aws"
-  version = "0.8.1"
+  version = "0.9.1"
 
   product_alias        = var.product_alias
   env_alias            = var.env_alias
@@ -663,7 +736,7 @@ On an unrecoverable error, the final chunk carries `error` instead of `delta`, w
 - `create_redis_response_store` / `create_valkey_response_store` / `create_dynamodb_response_store` must be `false` for `stream` (same constraint as `async`) — Terraform validation enforces this.
 - See [examples/aws-serverless/streaming-openai](https://github.com/yaalalabs/agent-kernel/tree/develop/examples/aws-serverless/streaming-openai) for a complete working example.
 
-**Containerized / direct streaming (no Terraform WebSocket setup)**: wherever the built-in FastAPI REST server runs — local/self-hosted, AWS ECS single-container REST, Azure Container Apps, GCP Cloud Run — SSE token streaming can be enabled by setting `execution.mode: stream` in `config.yaml`. `POST /api/v1/chat` and `/api/v1/chat-multipart` then return `text/event-stream` responses instead of JSON — no queue or WebSocket infrastructure is required for this mode. Not available on AWS Lambda or Azure Functions (serverless), which use WebSocket for streaming instead.
+**Containerized / direct streaming (no Terraform WebSocket setup)**: wherever the built-in FastAPI REST server runs — local/self-hosted, AWS ECS single-container REST, Azure Container Apps, GCP Cloud Run — SSE event streaming can be enabled by setting `execution.mode: stream` in `config.yaml`. `POST /api/v1/chat` and `/api/v1/chat-multipart` then return `text/event-stream` responses instead of JSON — no queue or WebSocket infrastructure is required for this mode. Not available on AWS Lambda or Azure Functions (serverless), which use WebSocket for streaming instead.
 
 ### E) API Gateway Custom Authorizer (AWS)
 
@@ -701,7 +774,7 @@ if __name__ == "__main__":
 ```hcl
 module "containerized_agents" {
   source  = "yaalalabs/ak-containerized/aws"
-  version = "0.8.1"
+  version = "0.9.1"
 
   product_alias        = var.product_alias
   env_alias            = var.env_alias
@@ -759,6 +832,7 @@ if __name__ == "__main__":
 ```yaml
 execution:
   queues:
+    type: sqs              # mandatory in a declared queues block: it is what selects the transport
     input:
       no_of_consumers: 5   # parallel input-poll threads in the Agent Runner container (default 5)
     output:
@@ -776,7 +850,7 @@ session:
 ```hcl
 module "containerized_agents" {
   source  = "yaalalabs/ak-containerized/aws"
-  version = "0.8.1"
+  version = "0.9.1"
 
   product_alias = var.product_alias
   env_alias     = var.env_alias
@@ -796,6 +870,10 @@ module "containerized_agents" {
 
   queue_mode = true
   execution_mode   = "rest_sync"   # or "rest_async"
+
+  # Uncomment with `schedule: {provider: {type: eventbridge}, store: {type: dynamodb}}` in config.yaml
+  # enable_scheduling              = true
+  # create_dynamodb_schedule_table = true
 
   queue_config = {
     input_queue_visibility_timeout  = 120
@@ -834,7 +912,7 @@ module "containerized_agents" {
 
 ```toml
 dependencies = [
-  "agentkernel[openai,api,aws]>=0.8.1"
+  "agentkernel[openai,api,aws]>=0.9.1"
 ]
 ```
 
@@ -895,7 +973,7 @@ registered here, no agent definitions) and `app_agent_runner.py` (`ECSAgentRunne
 ```hcl
 module "containerized_agents" {
   source  = "yaalalabs/ak-containerized/aws"
-  version = "0.8.1"
+  version = "0.9.1"
 
   providers = { aws = aws, docker = docker }
 
@@ -957,7 +1035,7 @@ handler = AzureFunctions.handler
 ```hcl
 module "serverless_agents" {
   source  = "yaalalabs/ak-serverless/azurerm"
-  version = "0.8.1"
+  version = "0.9.1"
 
   product_alias        = var.product_alias
   env_alias            = var.env_alias
@@ -1001,7 +1079,7 @@ module "serverless_agents" {
 ```hcl
 module "containerized_agents" {
   source  = "yaalalabs/ak-containerized/azurerm"
-  version = "0.8.1"
+  version = "0.9.1"
 
   product_alias        = var.product_alias
   env_alias            = var.env_alias
@@ -1045,7 +1123,7 @@ def main() -> None:
 ```hcl
 module "serverless_agent" {
   source  = "yaalalabs/ak-serverless/google"
-  version = "0.8.1"
+  version = "0.9.1"
 
   providers = { google = google, google-beta = google-beta, docker = docker }
 
@@ -1076,7 +1154,7 @@ module "serverless_agent" {
 ```hcl
 module "serverless_agent" {
   source  = "yaalalabs/ak-serverless/google"
-  version = "0.8.1"
+  version = "0.9.1"
 
   providers = { google = google, google-beta = google-beta, docker = docker }
 
@@ -1103,8 +1181,8 @@ The module injects `AK_SESSION__TYPE=firestore` and `AK_SESSION__FIRESTORE__COLL
 
 ```toml
 dependencies = [
-  "agentkernel[openai,api,gcp]>=0.8.1"      # for Firestore sessions
-  # or: "agentkernel[openai,api,redis]>=0.8.1"  # for Redis sessions
+  "agentkernel[openai,api,gcp]>=0.9.1"      # for Firestore sessions
+  # or: "agentkernel[openai,api,redis]>=0.9.1"  # for Redis sessions
 ]
 ```
 
@@ -1129,7 +1207,7 @@ def main() -> None:
 ```hcl
 module "containerized_agent" {
   source  = "yaalalabs/ak-containerized/google"
-  version = "0.8.1"
+  version = "0.9.1"
 
   providers = { google = google, google-beta = google-beta, docker = docker }
 
@@ -1217,14 +1295,19 @@ also cross-installs Linux wheels so builds work from macOS).
 **Install:**
 
 ```bash
-helm dependency build ak-deployment/ak-k8s/chart
-helm install ak ak-deployment/ak-k8s/chart -f ak-deployment/ak-k8s/chart/values-dev.yaml \
+helm pull oci://ghcr.io/yaalalabs/charts/agent-kernel --version 0.9.1 --untar   # unpacks the flavor values files
+helm install ak oci://ghcr.io/yaalalabs/charts/agent-kernel --version 0.9.1 \
+  -f agent-kernel/values-dev.yaml \
   --set ioHandler.image.repository=<io image> \
   --set agentRunner.image.repository=<runner image> --set image.tag=<tag> \
   --set 'extraEnv[0].name=OPENAI_API_KEY' \
   --set 'extraEnv[0].valueFrom.secretKeyRef.name=openai' \
   --set 'extraEnv[0].valueFrom.secretKeyRef.key=api-key'
 ```
+
+The chart version tracks the Agent Kernel release (the pin above is the current one); the
+flavor values files ship inside the chart, so no repository checkout is needed.
+`ak-deployment/ak-k8s/chart` in the repository is for developing the chart itself.
 
 - `values-dev.yaml`: micro-clusters (k3d/kind/microk8s/k3s), single replicas, auto-provisioned
   JetStream, port-forward entry; also documents the single-process profile (one pod,
