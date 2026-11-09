@@ -1,7 +1,10 @@
+from collections.abc import Mapping
 from enum import StrEnum
-from typing import Any, Dict, Optional
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from ..core.util.payload import JSONText
 
 # Standard message-attribute names carried alongside the body (spec §2). Transports map these to
 # their native metadata mechanism (SQS message attributes, Kafka headers, NATS headers).
@@ -9,6 +12,15 @@ ATTR_REQUEST_ID = "request_id"
 ATTR_USER_ID = "user_id"
 ATTR_ENDPOINT_URL = "endpoint_url"
 ATTR_STATUS_CODE = "status_code"
+ATTR_INTEGRATION = "integration"
+ATTR_THREAD = "thread"
+ATTR_AGUI = "agui"
+# Marks an output message as a realtime stream chunk (audio/transcript/interrupt/done), so the
+# Response Handler routes it to the integration adapter's deliver_chunk instead of guessing from
+# the body shape.
+ATTR_REALTIME = "realtime"
+ATTR_PROTOCOL = "protocol"
+REPLY_CONTEXT_PREFIX = "reply_"
 
 
 class QueueName(StrEnum):
@@ -24,14 +36,32 @@ class QueueMessage(BaseModel):
     ``native`` carries the transport-native handle (e.g. a raw boto3 record) for the transport's
     own ack/nack bookkeeping and for legacy consumers that still expect raw records; it is
     excluded from serialization.
+
+    ``body`` is JSON **text**, not an object, because that is what a broker carries. Assigning a
+    dict or a list encodes it here rather than at the sender, so the rule holds for a transport
+    written later: the SQS, Kafka and NATS transports all hand the body straight to the wire, while
+    the in-memory one stores the envelope as an object and would have let a dict through.
     """
 
-    body: str = ""
-    attributes: Dict[str, str] = Field(default_factory=dict)
-    group_id: Optional[str] = None
-    dedup_id: Optional[str] = None
+    body: JSONText = ""
+    attributes: dict[str, str] = Field(default_factory=dict)
+    group_id: str | None = None
+    dedup_id: str | None = None
     receive_count: int = 1
-    message_id: Optional[str] = None
+    message_id: str | None = None
     native: Any = Field(default=None, exclude=True)
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @staticmethod
+    def protocol_of(attributes: Mapping[str, Any]) -> str | None:
+        """The surface name when a caller is waiting on the store for this message (A2A, MCP), else None.
+
+        Only a non-empty ``str`` counts, the rule ``IntegrationDelivery.integration_of`` applies:
+        a mocked attribute map hands back truthy objects, which must not reroute a message.
+
+        :param attributes: A message's attributes.
+        :return: The value of the ``protocol`` attribute, or None.
+        """
+        protocol = attributes.get(ATTR_PROTOCOL)
+        return protocol if isinstance(protocol, str) and protocol else None

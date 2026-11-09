@@ -3,19 +3,9 @@ variable "region" {
   description = "Region"
 }
 
-variable "product_alias" {
+variable "prefix" {
   type        = string
-  description = "Product alias"
-}
-
-variable "env_alias" {
-  type        = string
-  description = "Environment alias"
-}
-
-variable "module_name" {
-  type        = string
-  description = "module name"
+  description = "Prefix applied to every resource name"
 }
 
 variable "is_production" {
@@ -38,4 +28,16 @@ variable "vpc_id" {
 variable "private_subnet_ids" {
   description = "List of private subnet IDs for Lambda deployment"
   type        = list(string)
+}
+
+variable "alb_security_group_id" {
+  description = "ALB security group ID. If not provided, a new one will be created"
+  type        = string
+  default     = null
+}
+
+variable "ecs_service_security_group_id" {
+  description = "ECS service security group ID. If not provided, a new one will be created"
+  type        = string
+  default     = null
 }

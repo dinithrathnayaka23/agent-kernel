@@ -30,6 +30,8 @@ Ask the user the following questions (adapt based on context):
    - **Google ADK** (Google's Agent Development Kit)
    - **Smolagents** (lightweight agent framework with managed-agent routing)
    - **Pydantic AI** (provider-agnostic — native OpenAI/Anthropic/Google/Bedrock/… support with `FallbackModel` failover)
+   - **Microsoft Agent Framework** (Microsoft's unified successor to AutoGen and Semantic Kernel — works with any MAF chat client: OpenAI, Azure OpenAI, Anthropic, …)
+   - **Claude Agent SDK** (Anthropic's Claude Code harness — built-in file/shell/web tools, subagents; Claude models only, needs `ANTHROPIC_API_KEY` or Bedrock/Vertex; heavier: one CLI process per run)
 
 2. **Agent purpose**: What should your agent(s) do? (e.g., "customer support bot", "code review assistant", "data analysis agent")
 
@@ -90,12 +92,12 @@ description = "<description>"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "agentkernel[<extras>]>=0.9.1",
+    "agentkernel[<extras>]>=0.9.5",
 ]
 
 [dependency-groups]
 dev = [
-    "agentkernel[test]>=0.9.1",
+    "agentkernel[test]>=0.9.5",
     "black>=23.0.0",
     "isort>=5.0.0",
     "mypy>=1.0.0",
@@ -118,9 +120,11 @@ target-version = ["py312"]
 - API mode: `agentkernel[<framework>,api]`
 - Smolagents framework extra: `smolagents`
 - Pydantic AI framework extra: `pydanticai` (installs the provider-agnostic `pydantic-ai-slim` core only — also add a provider, e.g. `pydantic-ai-slim[openai]`)
+- Microsoft Agent Framework extra: `maf` (installs the provider-agnostic `agent-framework-core` only — also add a provider package, e.g. `agent-framework-openai`)
+- Claude Agent SDK framework extra: `claude` (bundles the Claude Code CLI; no Node.js needed)
 - With messaging: add `slack`, `whatsapp`, etc.
 - With session store: add `redis`, `aws` (for DynamoDB), `azure` (for Cosmos DB)
-- With tracing: add `langfuse`, `openllmetry`, or `logfire`
+- With tracing: add `langfuse`, `openllmetry`, `logfire`, or `cloudwatch`
 
 #### Agent definition file
 
@@ -298,6 +302,60 @@ if __name__ == "__main__":
     CLI.main()
 ```
 
+**For Microsoft Agent Framework**:
+
+```python
+from agent_framework import Agent
+from agent_framework.openai import OpenAIChatClient
+from agentkernel.cli import CLI  # or RESTAPI, Lambda
+from agentkernel.maf import MAFModule, MAFToolBuilder
+
+# Swap the client for any other MAF provider (install its package, e.g. agent-framework-anthropic).
+<agent_name> = Agent(
+    OpenAIChatClient(model="gpt-4.1-mini"),
+    name="<name>",                # required — AK registers agents by name immediately
+    description="<short description>",  # set it — AK reports this as the agent description / A2A summary
+    instructions="<instructions>",
+    tools=MAFToolBuilder.bind([]),
+)
+
+MAFModule([<agent_name>])
+
+if __name__ == "__main__":
+    CLI.main()
+```
+
+**For Claude Agent SDK framework**:
+
+```python
+from agentkernel.cli import CLI  # or RESTAPI, Lambda
+from agentkernel.claude import ClaudeAgentSpec, ClaudeModule, ClaudeToolBuilder
+from claude_agent_sdk import ClaudeAgentOptions
+
+# The SDK has no named agent object: ClaudeAgentSpec adds the name, description and tools,
+# and passes ClaudeAgentOptions through unchanged. Claude models only (ANTHROPIC_API_KEY or Bedrock/Vertex).
+<agent_name> = ClaudeAgentSpec(
+    name="<name>",
+    description="<short description>",
+    options=ClaudeAgentOptions(
+        model="sonnet",
+        system_prompt="<instructions>",
+        tools=[],                   # no built-in Claude Code tools (Bash, file edits, ...) on the server
+        setting_sources=[],         # ignore ~/.claude settings and CLAUDE.md
+        permission_mode="dontAsk",  # deny any tool call that is not explicitly approved
+        verbatim_prompts=True,      # no @path file expansion or slash commands from request text
+    ),
+    tools=ClaudeToolBuilder.bind([]),
+)
+
+ClaudeModule([<agent_name>])
+
+if __name__ == "__main__":
+    CLI.main()
+```
+
+> **Gotcha (Claude Agent SDK):** Keep `tools=[]`, `setting_sources=[]` and an explicit `permission_mode` for any server deployment: the SDK's defaults give the model Bash and file tools on the host. Each run starts a Claude Code CLI process (~0.5 s, a few hundred MB), so deploy as a container (Lambda needs a container image with raised memory and timeout).
+
 #### Custom tools (tool.py)
 
 ```python
@@ -331,7 +389,7 @@ session:
 # Tracing (optional)
 # trace:
 #   enabled: true
-#   type: langfuse     # langfuse | openllmetry | logfire
+#   type: langfuse     # langfuse | openllmetry | logfire | cloudwatch
 ```
 
 #### test-config.yaml

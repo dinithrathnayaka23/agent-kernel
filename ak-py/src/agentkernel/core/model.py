@@ -1,11 +1,13 @@
 import json
 import uuid
+from collections.abc import Callable
 from enum import Enum
-from typing import Any, Callable, List, Literal, Optional, Union
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
-from .event import StreamEvent
+from .event import PausedInterruption, StreamEvent
+from .util.payload import JSONPayload
 
 
 class AgentRequestText(BaseModel):
@@ -70,6 +72,23 @@ class AgentRequestAny(BaseModel):
     type: Literal["other"] = "other"
 
 
+class AgentRequestVoice(BaseModel):
+    """
+    AgentRequestVoice encapsulates a voice request to an agent
+
+    audio_data: str  : This should be base64 encoded string or url
+    name: str : name of the voice clip
+    type: Literal["voice"]
+    mime_type: str | None = None : Optional. The IANA standard MIME type of the voice clip
+    """
+
+    prompt: str = ""
+    audio_data: str
+    name: str
+    type: Literal["voice"] = "voice"
+    mime_type: str | None = None
+
+
 class AgentRequestAttachmentRef(BaseModel):
     """
     AgentRequestAttachmentRef references an attachment whose bytes are already
@@ -122,20 +141,99 @@ class AgentReplyImage(AgentRequestImage):
         return f"{self.response}. Image {self.name} is attached."
 
 
-type AgentRequest = Union[AgentRequestText, AgentRequestFile, AgentRequestImage, AgentRequestAny, AgentRequestAttachmentRef]
-type AgentReply = Union[AgentReplyText, AgentReplyImage, AgentReplyAny]
+class ResumeDecision(BaseModel):
+    """
+    A human's answer to one PausedInterruption.
+
+    id: str : the interruption being answered
+    status: Literal["approved", "denied", "cancelled"] | None : the verb. Optional, because a pause
+        asking for a value has nothing to approve; Runtime requires it only for the approval kinds
+    message: str | None : the human's words — a free-text answer, or the reason for a refusal
+    payload: JsonValue : the structured answer — option(s) chosen, overridden arguments. Any JSON
+        value, not just an object: a framework may take a bare list or string as the answer, and
+        wrapping it in a dict AK invented would not survive the round trip
+    """
+
+    id: str
+    status: Literal["approved", "denied", "cancelled"] | None = None
+    message: str | None = None
+    payload: JsonValue = None
+
+
+class _ResumeDecisions(BaseModel):
+    """
+    Shared shape and structural validation for the two types carrying decisions.
+
+    Matching a decision to a pending interruption is deliberately not checked here: that needs the
+    session and is a Runtime check with its own error.
+    """
+
+    run_id: str | None = None
+    decisions: list[ResumeDecision]
+
+    @model_validator(mode="after")
+    def _validate_decisions(self) -> "_ResumeDecisions":
+        if not self.decisions:
+            raise ValueError("resume requires at least one decision")
+        ids = [d.id for d in self.decisions]
+        duplicates = sorted({i for i in ids if ids.count(i) > 1})
+        if duplicates:
+            raise ValueError(f"resume carries more than one decision for: {', '.join(duplicates)}")
+        return self
+
+
+class ResumeSpec(_ResumeDecisions):
+    """
+    Resume block on a chat request: answer a pause instead of starting a new turn.
+
+    run_id: str | None : which paused run is being answered. Optional because the AG-UI protocol
+        has no field for it; the runtime resolves the run from the decisions' interruption ids
+    decisions: list[ResumeDecision] : one per interruption answered. Answering some now and the
+        rest later is allowed — the remainder comes back as another pause
+    """
+
+
+class AgentResumeRequestAny(_ResumeDecisions):
+    """
+    A human decision travelling through the request pipeline.
+
+    A member of the AgentRequest union rather than a subclass of AgentRequestAny, whose handling is
+    *skip* — exactly wrong for a decision that must reach the runner.
+    """
+
+    type: Literal["resume"] = "resume"
+
+
+type AgentRequest = AgentRequestText | AgentRequestFile | AgentRequestImage | AgentRequestVoice | AgentRequestAny | AgentRequestAttachmentRef | AgentResumeRequestAny
+type AgentReply = AgentReplyText | AgentReplyImage | AgentReplyAny
+
+AgentRequestUnion = Annotated[
+    AgentRequestText | AgentRequestFile | AgentRequestImage | AgentRequestVoice | AgentRequestAny | AgentRequestAttachmentRef | AgentResumeRequestAny,
+    Field(discriminator="type"),
+]
 
 
 class AgentReplyAny(BaseModel):
     """
     AgentReplyAny encapsulates a structured (JSON) reply from an agent.
 
-    content: dict : The structured agent output as a JSON-compatible dict
+    content: dict | list : The structured agent output, normalised to plain JSON types on
+                           validation. A value with a canonical JSON form (datetime, Decimal, UUID,
+                           Enum, set, UTF-8 bytes, a non-string key) coerces silently; one with
+                           none — including NaN and the infinities — raises here rather than
+                           somewhere down the pipeline. Replacing this field with
+                           ``model_copy(update={"content": ...})`` skips that validation, so build a
+                           new reply instead; updating only ``media_type`` by copy is safe.
+    media_type: str|None : The format of ``content``, as a media type string. Unset by
+                           default, and never set by a framework adapter — a post-hook applies it.
+                           Surfaces that can carry an object do so only when this is set; with it
+                           unset every surface behaves exactly as it did before the field existed.
     prompt: str   : The text prompt sent to the agent
     type: Literal["other"]
     """
 
-    content: dict
+    content: JSONPayload
+    media_type: str | None = None
     prompt: str = ""
     type: Literal["other"] = "other"
 
@@ -146,8 +244,14 @@ class AgentReplyAny(BaseModel):
     def from_output(cls, value: Any, prompt: str = "") -> "AgentReplyAny | None":
         """
         Builds an AgentReplyAny from a framework output value if it is structured.
-        Pydantic instances are converted with model_dump(mode="json") so the content
-        dict is JSON-compatible; plain dicts are used as content directly.
+        Pydantic instances are converted with model_dump(mode="json"); plain dicts are used as
+        content directly and reach the same normalisation through field validation, so both routes
+        produce equal content for equal values.
+
+        A bare list stays unstructured here even though ``content`` accepts one: a framework
+        returning a list has always produced a text reply, and promoting it would change ``result``
+        for an agent that never opted in. A caller that means to send an array builds the reply
+        itself.
 
         :param value: The framework output value to inspect.
         :param prompt: The text prompt sent to the agent.
@@ -161,15 +265,73 @@ class AgentReplyAny(BaseModel):
         return None
 
 
-class ExecutionMode(str, Enum):
+class AgentPausedReplyAny(AgentReplyAny):
     """
-    Execution mode enumeration for Lambda function behavior.
+    The run stopped and is waiting on a human.
+
+    A subclass of AgentReplyAny rather than a new member of the AgentReply union, so the union and
+    every isinstance tuple over it keep working untouched. Safe only because a reply is never
+    re-validated from JSON anywhere in src/. Narrowing the inherited `type` Literal is a Liskov
+    violation mypy flags; it is the accepted cost of the subclass (design.md, open question 1).
+
+    run_id: str : which paused run this is; the client echoes it back with its decision
+    session_id: str : the session holding the record
+    agent: str : the agent that paused, which also identifies the framework
+    interruptions: list[PausedInterruption] : what the human has to decide
+
+    content is derived from the fields above and never set independently — a caller-supplied one is
+    overwritten, so the two cannot drift. The opaque per-framework resume state is never on this
+    model: a reply crosses the queue transport and reaches clients.
+    """
+
+    content: dict = Field(default_factory=dict)
+    type: Literal["paused"] = "paused"  # type: ignore[assignment]
+    run_id: str
+    session_id: str
+    agent: str
+    interruptions: list[PausedInterruption]
+
+    @model_validator(mode="after")
+    def _derive_content(self) -> "AgentPausedReplyAny":
+        """
+        Rebuilds content from the typed fields, discarding anything the caller passed.
+
+        Safe from recursion: the model does not enable validate_assignment, so assigning here does
+        not re-run validation.
+        """
+        self.content = {
+            "run_id": self.run_id,
+            "session_id": self.session_id,
+            "agent": self.agent,
+            "interruptions": [interruption.model_dump(mode="json") for interruption in self.interruptions],
+        }
+        return self
+
+
+class ExecutionMode(str, Enum):
+    """How a request is invoked, which also fixes the transport its reply travels on.
+
+    The mode is a process-level configuration value (``execution.mode``), read wherever a
+    component must branch on it; it is never carried on a request.
+
+    - ``REST_SYNC`` / ``REST_ASYNC``: over REST (JSON reply, submit + poll, or SSE for delta replies).
+    - ``ASYNC``: over WebSocket only.
+    - ``REALTIME``: a persistent model socket (voice) through an integration gateway.
+
+    How much of the reply each message carries is ``execution.message_type`` (``ReplyMessageType``).
     """
 
     REST_SYNC = "rest_sync"
     REST_ASYNC = "rest_async"
-    STREAM = "stream"
     ASYNC = "async"
+    REALTIME = "realtime"
+
+
+class ReplyMessageType(str, Enum):
+    """How much of the reply each delivered message carries (``execution.message_type``)."""
+
+    COMPLETE = "complete"  # one message with the whole reply
+    DELTA = "delta"  # one message per StreamChunk, ending with the done chunk
 
 
 class StreamChunk(BaseModel):
@@ -200,7 +362,7 @@ class FileData(BaseModel):
 
     file_data: str  # base64 encoded string or URL
     name: str
-    mime_type: Optional[str] = None
+    mime_type: str | None = None
 
 
 class ImageData(BaseModel):
@@ -208,7 +370,7 @@ class ImageData(BaseModel):
 
     image_data: str  # base64 encoded string
     name: str
-    mime_type: Optional[str] = None
+    mime_type: str | None = None
 
 
 class ScheduleSpec(BaseModel):
@@ -226,8 +388,8 @@ class ScheduleSpec(BaseModel):
     must import without it.
     """
 
-    at: Optional[str] = None
-    cron: Optional[str] = None
+    at: str | None = None
+    cron: str | None = None
     timezone: str = "UTC"
     session_mode: Literal["reuse", "new"] = "reuse"
 
@@ -250,15 +412,43 @@ class BaseChatRequest(BaseModel):
     A schedule block defers the request: instead of running the agent, the request
     is registered as a scheduled task and acknowledged with HTTP 202. It requires
     the scheduling capability (a 'schedule' block in config.yaml) and a user_id.
+
+    A resume block answers a paused run instead of starting a new turn, so prompt
+    defaults to empty rather than being required. ChatService rejects a request
+    carrying neither, with the same error a missing prompt has always raised.
     """
 
-    prompt: str
-    agent: Optional[str] = None
-    session_id: Optional[str] = None
-    user_id: Optional[str] = None
-    group_id: Optional[str] = None
-    thread_name: Optional[str] = None
-    schedule: Optional[ScheduleSpec] = None
+    prompt: str = ""
+    agent: str | None = None
+    session_id: str | None = None
+    user_id: str | None = None
+    group_id: str | None = None
+    thread_name: str | None = None
+    schedule: ScheduleSpec | None = None
+    resume: ResumeSpec | None = None
+
+    @model_validator(mode="after")
+    def _require_a_prompt_or_a_resume(self) -> "BaseChatRequest":
+        """
+        Rejects a body carrying neither key, which is how a queue consumer spots a poison message.
+
+        `prompt` is a required field everywhere else in the product, and every queue consumer relies
+        on `BaseRunRequest.model_validate` raising to drive retry -> max_receive_count -> dead-letter
+        (`pipeline/agent_runner.py`, both ECS runners, both serverless runners). Defaulting it so a
+        decision can stand alone removed the only structural check distinguishing a run request from
+        arbitrary JSON, and a poison message was then acked instead of dead-lettered.
+
+        Keyed on `model_fields_set` rather than on the value, so `{"prompt": ""}` behaves exactly as
+        it did before: an explicitly empty prompt is a run request, an absent one is not. A prebuilt
+        `requests` list counts too — that is the shape a producer composing its own list sends, and it
+        carries the turn without a prompt key.
+
+        :return: This request, when it carries a prompt key, a prebuilt request list, or a resume.
+        :raises ValueError: If it carries none of them, making it indistinguishable from unrelated JSON.
+        """
+        if not (self.model_fields_set & {"prompt", "requests"}) and self.resume is None:
+            raise ValueError("a chat request must carry a 'prompt', a 'resume' block, or a prebuilt 'requests' list")
+        return self
 
 
 class BaseRunRequest(BaseChatRequest):
@@ -268,19 +458,27 @@ class BaseRunRequest(BaseChatRequest):
     it delivers, identifying the task and the occurrence this run belongs to. They are
     typed fields (not extras) so an occurrence's metadata never reaches the agent as
     additional context.
+
+    requests carries an already-built AgentRequest list, for producers that compose it
+    themselves rather than leaving it to RequestBuilder: a messaging integration downloads
+    its attachments at the edge and stores them, so what reaches the queue is a request list
+    (including AgentRequestAttachmentRef entries, which files/images cannot express). Typed
+    for the same reason as the scheduling fields: an extra would reach the agent as
+    AgentRequestAny context.
     """
 
-    files: Optional[List[FileData]] = None
-    images: Optional[List[ImageData]] = None
-    scheduled_task_id: Optional[str] = None
-    scheduled_time: Optional[str] = None
+    files: list[FileData] | None = None
+    images: list[ImageData] | None = None
+    requests: list[AgentRequestUnion] | None = None
+    scheduled_task_id: str | None = None
+    scheduled_time: str | None = None
     model_config = ConfigDict(extra="allow")
 
 
 class BaseRequest(BaseModel):
-    request_id: Optional[str] = None
-    route: Optional[str] = None  # RouteKey of the Websocket, needed for WS implementation
-    body: Optional[BaseRunRequest] = None
+    request_id: str | None = None
+    route: str | None = None  # RouteKey of the Websocket, needed for WS implementation
+    body: BaseRunRequest | None = None
     model_config = ConfigDict(extra="allow")
 
     @classmethod

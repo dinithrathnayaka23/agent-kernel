@@ -41,6 +41,21 @@ output "private_subnet_ids" {
   value       = local.subnet_ids
 }
 
+output "alb_security_group_id" {
+  description = "ALB security group ID"
+  value       = module.rest_service.alb_security_group_id
+}
+
+output "ecs_service_security_group_id" {
+  description = "ECS service security group ID"
+  value       = module.rest_service.security_group_id
+}
+
+output "agent_runner_security_group_id" {
+  description = "Agent Runner security group ID (queue mode only)"
+  value       = var.queue_mode ? module.agent_runner[0].security_group_id : null
+}
+
 output "input_queue_url" {
   description = "URL of the SQS Input Queue (queue mode only)"
   value       = var.queue_mode ? module.queues[0].input_queue_url : null
@@ -76,7 +91,7 @@ output "rest_service_task_role_arn" {
   value       = module.rest_service.task_role_arn
 }
 
-# WebSocket API outputs (async / stream modes only; null otherwise)
+# WebSocket API outputs (async mode only; null otherwise)
 
 output "websocket_api_endpoint_url" {
   description = "WebSocket API endpoint URL (wss://...)"

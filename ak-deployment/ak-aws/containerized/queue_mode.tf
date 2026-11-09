@@ -7,9 +7,7 @@ module "queues" {
   count  = var.queue_mode ? 1 : 0
   source = "./modules/queues"
 
-  product_alias = var.product_alias
-  env_alias     = var.env_alias
-  module_name   = var.module_name
+  prefix = var.prefix
 
   # EventBridge Scheduler cannot set a MessageDeduplicationId on the triggers it delivers, so
   # scheduling forces content-based deduplication on the Input Queue.
@@ -26,14 +24,13 @@ module "agent_runner" {
   count  = var.queue_mode ? 1 : 0
   source = "./modules/agent-runner"
 
-  product_alias = var.product_alias
-  env_alias     = var.env_alias
-  module_name   = var.module_name
-  region        = var.region
-  prefix        = local.prefix
+  prefix = var.prefix
+  region = var.region
 
   vpc_id     = local.vpc_id
   subnet_ids = local.subnet_ids
+
+  security_group_id = var.agent_runner.security_group_id
 
   ecs_cluster_arn  = module.ecs.cluster_arn
   ecs_cluster_name = module.ecs.cluster_name
@@ -52,6 +49,7 @@ module "agent_runner" {
   dynamodb_thread_table_arn      = local.dynamodb_thread_table_arn
   dynamodb_thread_table_name     = local.dynamodb_thread_table_name
   enable_scheduling              = var.enable_scheduling
+  ssm_enabled                    = var.ssm_enabled
   schedule_group_name            = local.schedule_group_name
   scheduler_execution_role_arn   = local.scheduler_execution_role_arn
   create_dynamodb_schedule_table = var.create_dynamodb_schedule_table
@@ -70,6 +68,7 @@ module "agent_runner" {
   queue_config   = var.queue_config
   scaling_config = var.scaling_config
   execution_mode = var.execution_mode
+  message_type   = var.message_type
 
   default_image_uri = module.docker_image[0].docker_image_uri
 

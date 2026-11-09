@@ -1,7 +1,7 @@
 {
   "skill": "ak-cloud-deploy",
   "description": "Evaluations for the ak-cloud-deploy (AWS/Azure/GCP/Kubernetes deployment) skill with sync/async and scalable modes",
-  "version": "0.9.1",
+  "version": "0.9.5",
   "evals": [
     {
       "id": "deploy-aws-serverless",
@@ -66,10 +66,11 @@
     },
     {
       "id": "deploy-aws-serverless-websocket-stream",
-      "name": "Deploy to AWS Lambda stream websocket mode",
+      "name": "Deploy to AWS Lambda websocket mode with delta messages",
       "input": "Deploy to AWS Lambda with WebSocket token streaming",
       "expected_outputs": [
-        "execution_mode = \"stream\"",
+        "execution_mode = \"async\"",
+        "message_type",
         "ws_connection_handler",
         "ws_routes",
         "queue_mode = true",
@@ -78,7 +79,8 @@
       ],
       "must_not_contain": [
         "create_redis_response_store = true",
-        "create_dynamodb_response_store = true"
+        "create_dynamodb_response_store = true",
+        "execution_mode = \"stream\""
       ]
     },
     {
@@ -140,6 +142,23 @@
         "schedule:",
         "type: eventbridge",
         "type: dynamodb"
+      ],
+      "must_not_contain": [
+        "azurerm"
+      ]
+    },
+    {
+      "id": "deploy-aws-secret-ssm",
+      "name": "Deploy to AWS Lambda with secrets from SSM Parameter Store",
+      "input": "Deploy my agent to AWS Lambda and read OPENAI_API_KEY from SSM Parameter Store instead of a Lambda environment variable",
+      "expected_outputs": [
+        "yaalalabs/ak-serverless/aws",
+        "ssm_enabled = true",
+        "secret:",
+        "type: aws_ssm",
+        "SecretManager",
+        "/ak/",
+        "SecureString"
       ],
       "must_not_contain": [
         "azurerm"

@@ -3,23 +3,87 @@ import base64
 import json
 import logging
 import uuid
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from collections.abc import AsyncGenerator
+from typing import Any
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from ..api.handler import AgentRESTRequestHandler
 from ..core.config import AKConfig
 from ..core.model import BaseRunRequest, ExecutionMode, FileData, ImageData
-from .envelope import ATTR_REQUEST_ID, QueueMessage, QueueName
+from .envelope import ATTR_PROTOCOL
+from .producer import RequestProducer
 from .response_store.base import ResponseStore
 from .response_store.factory import ResponseStoreFactory
 from .transport.base import QueueTransport, QueueTransportFactory
 
-# Retry budget for awaiting a response when no execution.response_store block is configured:
-# 60 x 1s. Agent runs are frequently LLM-bound and slow; direct mode waited indefinitely, so the
-# unconfigured default errs generous. Set execution.response_store.{retry_count,delay} to tune.
 _DEFAULT_RESPONSE_RETRY = (60, 1.0)
+
+
+class QueuedReply(BaseModel):
+    """One whole reply read back from the response store, as ``RestHandler.request`` returns it.
+
+    ``body`` is kept exactly as the Agent Runner produced it (``ResponseBuilder.build_response``),
+    so a caller reads the same keys a REST client does; the properties only save each surface
+    from repeating the dict checks.
+    """
+
+    request_id: str
+    status_code: int = 200
+    body: Any = None
+
+    @property
+    def is_error(self) -> bool:
+        """Whether the run failed: a status of 400 or above."""
+        return self.status_code >= 400
+
+    @property
+    def result(self) -> Any:
+        """The reply's ``result`` when the body is a dict, else None."""
+        return self.body.get("result") if isinstance(self.body, dict) else None
+
+    @property
+    def media_type(self) -> str | None:
+        """The structured reply's ``media_type`` when the body is a dict and carries one, else None."""
+        return self.body.get("media_type") if isinstance(self.body, dict) else None
+
+    @property
+    def error(self) -> str | None:
+        """The failed run's ``error`` when the body is a dict and carries one, else None."""
+        return self.body.get("error") if isinstance(self.body, dict) else None
+
+    @classmethod
+    def from_record(cls, record: dict[str, Any]) -> "QueuedReply":
+        """Build a reply from a response-store record (``{session_id, request_id, status_code, body}``).
+
+        A missing status counts as 200, the rule REST applies to records written before the
+        status was forwarded.
+
+        :param record: The record the Response Handler stored.
+        :return: The reply.
+        """
+        return cls(
+            request_id=str(record.get("request_id") or ""),
+            status_code=int(record.get("status_code") or 200),
+            body=record.get("body"),
+        )
+
+
+class ReplyTimeoutError(TimeoutError):
+    """The wait budget ran out before the reply was stored."""
+
+    def __init__(self, request_id: str, retry_count: int, delay: float):
+        """
+        :param request_id: The request that got no reply.
+        :param retry_count: The number of store reads the budget allowed.
+        :param delay: The seconds between those reads.
+        """
+        super().__init__(f"No reply stored for request_id {request_id} after {retry_count} reads {delay}s apart")
+        self.request_id = request_id
+        self.retry_count = retry_count
+        self.delay = delay
 
 
 class RestHandler(AgentRESTRequestHandler):
@@ -33,8 +97,8 @@ class RestHandler(AgentRESTRequestHandler):
         # Override base logger with the component-specific one.
         self._log = logging.getLogger(logger_name)
         self._config = AKConfig.get()
-        self._transport: Optional[QueueTransport] = None
-        self._response_store: Optional[ResponseStore] = None
+        self._transport: QueueTransport | None = None
+        self._response_store: ResponseStore | None = None
 
     def get_response_store(self) -> ResponseStore:
         """The response store used to await/poll responses.
@@ -57,25 +121,19 @@ class RestHandler(AgentRESTRequestHandler):
             self._transport = QueueTransportFactory.create()
         return self._transport
 
-    def _enqueue_request(self, body: BaseRunRequest, request_id: str) -> Dict[str, Any]:
-        """Build the input-queue envelope for a chat request and send it.
+    def _enqueue_request(self, body: BaseRunRequest, request_id: str) -> dict[str, Any]:
+        """Send a chat request to the input queue through the shared producer seam.
 
-        ``exclude_none`` keeps the body JSON identical to the pre-#495 SQS path (which dumped
-        the validated body model with ``exclude_none=True``).
+        Stays a method so ``get_transport()`` remains the transport injection point subclasses
+        (and tests) rely on; the envelope itself is built by RequestProducer (spec #524 §3).
         """
-        message = QueueMessage(
-            body=json.dumps(body.model_dump(exclude_none=True)),
-            attributes={ATTR_REQUEST_ID: request_id},
-            group_id=body.session_id,
-            dedup_id=request_id,
-        )
-        return self.get_transport().send(QueueName.INPUT, message) or {}
+        return RequestProducer(self.get_transport()).enqueue(body, request_id)
 
     def _is_queue_mode(self) -> bool:
         """True when an input queue is configured (enqueue mode); False for direct mode."""
         return self._config.execution.queues.input.url is not None
 
-    def _effective_mode(self) -> Optional[ExecutionMode]:
+    def _effective_mode(self) -> ExecutionMode | None:
         """The execution mode governing the chat routes. Subclasses may map unset to a default."""
         return self._config.execution.mode
 
@@ -89,8 +147,9 @@ class RestHandler(AgentRESTRequestHandler):
     async def _await_response_record(self, request_id: str):
         """Wait for the response record for ``request_id`` and return it (or None on timeout).
 
-        Polls full records (``get_record``) rather than bodies (``get_message``) on every store,
-        so the stored status_code reaches ``_build_sync_response`` on shared stores too.
+        The first read happens straight away, and each read deletes the record it returns. Polls
+        full records (``get_record``) rather than bodies (``get_message``) on every store, so the
+        stored status_code reaches the caller on shared stores too.
         """
         store = self.get_response_store()
         retry_count, delay = self._response_retry_config()
@@ -102,6 +161,49 @@ class RestHandler(AgentRESTRequestHandler):
                 await asyncio.sleep(delay)
         return None
 
+    async def request(self, body: BaseRunRequest, protocol: str) -> QueuedReply:
+        """Enqueue one chat request tagged with ``protocol`` and wait for its whole reply (#780).
+
+        The path A2A and MCP share with the REST chat route, minus everything HTTP: it raises no
+        ``HTTPException`` and always waits, whatever ``execution.mode`` is. The ``protocol``
+        attribute tells the runners and the Response Handler to deliver one whole reply to the
+        store in every mode. A reply with an error status is returned, not raised: the caller
+        checks ``is_error``.
+
+        :param body: The chat request; ``session_id`` and ``prompt`` are required.
+        :param protocol: The surface's name, stamped as the ``protocol`` attribute.
+        :return: The stored reply.
+        :raises ValueError: If ``session_id``, ``prompt`` or ``protocol`` is empty; nothing is sent.
+        :raises ReplyTimeoutError: If the budget runs out before the reply is stored.
+        """
+        self._validate_protocol_request(body, protocol)
+        request_id = str(uuid.uuid4())
+        self._log.info(f"[ENQUEUE] protocol={protocol}, session_id={body.session_id}, request_id={request_id}, agent={body.agent}")
+        # Offload the sync send so it doesn't block the event loop.
+        await asyncio.to_thread(RequestProducer(self.get_transport()).enqueue, body, request_id, {ATTR_PROTOCOL: protocol})
+
+        record = await self._await_response_record(request_id)
+        if record is None:
+            raise ReplyTimeoutError(request_id, *self._response_retry_config())
+        reply = QueuedReply.from_record(record)
+        self._log.info(f"[REPLY] protocol={protocol}, request_id={request_id}, status_code={reply.status_code}")
+        return reply
+
+    @staticmethod
+    def _validate_protocol_request(body: BaseRunRequest, protocol: str) -> None:
+        """Refuse a request the runner could only reject, before anything is sent.
+
+        The session and prompt messages match ``ChatService._validate`` word for word.
+
+        :raises ValueError: If ``session_id``, ``prompt`` or ``protocol`` is empty.
+        """
+        if not body.session_id:
+            raise ValueError("No session_id is provided in the request")
+        if not body.prompt:
+            raise ValueError("No prompt provided in the request")
+        if not protocol:
+            raise ValueError("protocol is required")
+
     def _build_sync_response(self, record: Any) -> Any:
         """Map a stored response record to the HTTP response, honoring its stored status.
 
@@ -110,6 +212,12 @@ class RestHandler(AgentRESTRequestHandler):
         an error body, and a 2xx-non-200 status (the 202 of a deferred chat) is preserved rather
         than collapsing to 200. A record without a status_code defaults to 200, so records
         written before the status was forwarded keep their behavior.
+
+        The 2xx-non-200 body is written with ``json.dumps`` into a plain ``Response`` rather than
+        handed to ``JSONResponse``, whose encoder rejects values FastAPI's own return path accepts.
+        Without that the same payload would succeed on direct REST and fail here, which is the
+        per-surface divergence this work exists to remove. The ``json.dumps`` is safe because the
+        record came off the wire as text; see ``ResponseBuilder.build_response``.
         """
         if not isinstance(record, dict) or "body" not in record:
             return record
@@ -119,7 +227,7 @@ class RestHandler(AgentRESTRequestHandler):
         if status_code >= 400:
             raise HTTPException(status_code=status_code, detail=body)
         if 200 < status_code < 400:
-            return JSONResponse(content=body, status_code=status_code)
+            return Response(content=json.dumps(body), media_type="application/json", status_code=status_code)
         return body
 
     async def enqueue_and_wait(self, body: BaseRunRequest):
@@ -127,13 +235,15 @@ class RestHandler(AgentRESTRequestHandler):
         try:
             if not body.session_id:
                 raise HTTPException(status_code=400, detail="session_id is required")
-            if not body.prompt:
+            if not body.prompt and body.resume is None:
                 raise HTTPException(status_code=400, detail="prompt is required")
 
             # Unique request_id, distinct from session_id.
             request_id = str(uuid.uuid4())
 
-            self._log.info(f"[REQUEST START] session_id={body.session_id}, request_id={request_id}, agent={body.agent}, prompt={body.prompt[:50]}")
+            self._log.info(
+                f"[REQUEST START] session_id={body.session_id}, request_id={request_id}, agent={body.agent}, prompt={(body.prompt or '')[:50]}"
+            )
 
             # Offload the sync send so it doesn't block the event loop.
             queue_result = await asyncio.to_thread(self._enqueue_request, body, request_id)
@@ -174,7 +284,7 @@ class RestHandler(AgentRESTRequestHandler):
             self._log.error(f"Error processing request: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail={"error": str(e), "session_id": body.session_id if body else None})
 
-    async def poll_response(self, request_id: Optional[str] = None, session_id: Optional[str] = None):
+    async def poll_response(self, request_id: str | None = None, session_id: str | None = None):
         """
         Poll for response (REST_ASYNC mode only).
 
@@ -225,7 +335,15 @@ class RestHandler(AgentRESTRequestHandler):
 
 class RequestHandler(RestHandler):
     """Pipeline REST surface (spec #495 §8): enqueues to the configured transport and serves
-    the poll/SSE routes. Always queue mode; the transport decides the topology."""
+    the poll/SSE routes. Always queue mode; the transport decides the topology.
+
+    ``requires_pipeline``, for the same reason the messaging webhook host declares it: this is a
+    queue producer, so on a bare ``RESTAPI.run([...])`` app it would enqueue into a queue no
+    runner drains while the caller still waits out its response-store budget. Mount it (and its
+    subclasses) through ``IOHandler.run``, which starts the runner behind it.
+    """
+
+    requires_pipeline = True
 
     def __init__(self):
         super().__init__(logger_name="ak.pipeline.request_handler")
@@ -252,42 +370,80 @@ class RequestHandler(RestHandler):
         return router
 
     async def run_chat(self, body: BaseRunRequest):
-        """POST /api/v1/chat: enqueue; SSE stream in STREAM mode, JSON otherwise."""
+        """POST /api/v1/chat: enqueue; SSE stream for rest_sync + delta, JSON otherwise."""
         # Direct-mode parity: same validation messages and error shape as ChatService._validate
         # (ValueError -> HTTPException(400, detail={"error": ...})).
         if not body.session_id:
             raise HTTPException(status_code=400, detail={"error": "No session_id is provided in the request"})
-        if not body.prompt:
+        if not body.prompt and body.resume is None:
             raise HTTPException(status_code=400, detail={"error": "No prompt provided in the request", "session_id": body.session_id})
 
+        self._reject_unroutable(body)
+        if self._config.execution.is_sse:
+            return await self._run_chat_stream(body)
+        return await self.enqueue_and_wait(body)
+
+    def _reject_unroutable(self, body: BaseRunRequest) -> None:
+        """Reject a request this topology cannot answer on this route, before anything is written.
+
+        Both rejections are about where the reply comes out, not about the request, so they run
+        ahead of every side effect: ``ThreadPipelineRequestHandler`` opens the thread and appends
+        the user message in its own ``run_chat``, and a 400 raised after that would leave a
+        phantom turn no reply ever answers. Subclasses that write before delegating call this
+        first.
+
+        :param body: The chat request; only its session_id reaches the error detail.
+        :raises HTTPException: 400 when the mode cannot serve this route.
+        """
         mode = self._effective_mode()
-        if mode == ExecutionMode.ASYNC:
+        if mode == ExecutionMode.REALTIME:
+            # Realtime replies are delivered to the stateful edge (e.g. the LiveKit gateway) that
+            # sent the request; a REST caller has no edge, so its reply could never reach it.
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "REALTIME mode delivers responses through the realtime gateway: this route is not available",
+                    "session_id": body.session_id,
+                },
+            )
+        if self._config.execution.is_websocket:
             raise HTTPException(
                 status_code=400,
                 detail={"error": "ASYNC mode delivers responses over the WebSocket route: connect to /ws instead", "session_id": body.session_id},
             )
-        if mode == ExecutionMode.STREAM:
-            return await self._run_chat_stream(body)
-        return await self.enqueue_and_wait(body)
-
-    async def _run_chat_stream(self, body: BaseRunRequest) -> StreamingResponse:
-        if not self.get_response_store().supports_chunk_streaming():
-            # Broker topologies pair STREAM with a shared store that cannot stream chunks;
-            # there the chunks are pushed over WebSocket and this route has nothing to serve.
+        if self._config.execution.is_sse and not self._store_can_serve_sse():
             raise HTTPException(
                 status_code=400,
                 detail={
-                    "error": "STREAM responses on this topology are delivered over the WebSocket route: connect to /ws instead",
+                    "error": "SSE (execution.mode rest_sync with message_type delta) needs a response store that can stream "
+                    "chunks and is shared with the response handler; this topology's store cannot",
                     "session_id": body.session_id,
                 },
             )
+
+    def _store_can_serve_sse(self) -> bool:
+        """Whether the configured response store can carry this route's chunks back to the caller.
+
+        Two predicates, because chunk streaming and cross-process visibility are different facts
+        and SSE on a broker needs both: ``InMemoryResponseStore`` streams chunks but holds them in
+        class-level state, so the edge and the Response Handler would hold separate copies.
+
+        :return: True when the store can stream chunks and the runner's writes are readable here.
+        """
+        store = self.get_response_store()
+        if not store.supports_chunk_streaming():
+            return False
+        return store.shared or QueueTransportFactory.resolve_type() == "in_memory"
+
+    async def _run_chat_stream(self, body: BaseRunRequest) -> StreamingResponse:
+        """Enqueue and serve the chunks over SSE; _reject_unroutable has vouched for the store."""
         request_id = str(uuid.uuid4())
         self._log.info(f"[STREAM REQUEST] session_id={body.session_id}, request_id={request_id}")
         await asyncio.to_thread(self._enqueue_request, body, request_id)
         return StreamingResponse(self._sse_stream(request_id, body.session_id), media_type="text/event-stream")
 
-    async def _sse_stream(self, request_id: str, session_id: Optional[str]) -> AsyncGenerator[str, None]:
-        store = self.get_response_store()  # chunk-streaming capable: checked in _run_chat_stream before enqueue
+    async def _sse_stream(self, request_id: str, session_id: str | None) -> AsyncGenerator[str, None]:
+        store = self.get_response_store()  # chunk-streaming capable: checked by _reject_unroutable
         chunk_iterator = store.stream(request_id)
         try:
             while True:
@@ -310,23 +466,24 @@ class RequestHandler(RestHandler):
             yield f"data: {json.dumps(error_chunk)}\n\n"
         finally:
             # Deterministically release the per-request chunk state, including when the client
-            # disconnects mid-stream. close_stream is synchronous and non-blocking, so it runs
-            # even under task cancellation; a plain chunk_iterator.close() would raise
-            # "generator already executing" whenever the generator is mid-fetch in the worker
-            # thread (its sentinel unblocks that fetch and the generator returns on its own).
+            # disconnects mid-stream. Offloaded because close_stream blocks on a redis-like store
+            # (two to four round trips, seconds on a reconnect) and this runs on the event loop;
+            # the await still completes under task cancellation. A plain chunk_iterator.close()
+            # would raise "generator already executing" whenever the generator is mid-fetch in the
+            # worker thread (its sentinel unblocks that fetch and the generator returns on its own).
             if store.supports_chunk_streaming():
-                store.close_stream(request_id)
+                await asyncio.to_thread(store.close_stream, request_id)
 
     async def run_multipart_chat(
         self,
         prompt: str = Form(...),
-        agent: Optional[str] = Form(None),
-        session_id: Optional[str] = Form(None),
-        user_id: Optional[str] = Form(None),
-        group_id: Optional[str] = Form(None),
-        thread_name: Optional[str] = Form(None),
-        files: Optional[List[UploadFile]] = File(None),
-        images: Optional[List[UploadFile]] = File(None),
+        agent: str | None = Form(None),
+        session_id: str | None = Form(None),
+        user_id: str | None = Form(None),
+        group_id: str | None = Form(None),
+        thread_name: str | None = Form(None),
+        files: list[UploadFile] | None = File(None),
+        images: list[UploadFile] | None = File(None),
     ):
         """POST /api/v1/chat-multipart: uploads become base64 FileData/ImageData and flow as JSON."""
         try:

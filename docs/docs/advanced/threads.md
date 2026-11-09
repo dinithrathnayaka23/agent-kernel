@@ -43,7 +43,7 @@ sequenceDiagram
 - **Pluggable storage**: in-memory, Redis, Valkey, DynamoDB, Firestore, or Cosmos DB.
 - **Optional, pluggable authorization**: you supply an `Authoriser` that validates a Bearer token against
   *your* authentication provider; Agent Kernel never authenticates users itself.
-- **Streaming included**: with `execution.mode: stream`, the user message is recorded before the stream
+- **Streaming included**: with `execution.message_type: delta`, the user message is recorded before the stream
   starts and the assistant message is assembled from the streamed deltas on completion.
 
 :::caution Platform scope
@@ -54,8 +54,11 @@ their own conversation history, and AK threads alongside them would create dupli
 
 ## Enabling Thread Support
 
-Mount `AgentThreadRequestHandler` instead of the default handler; it serves `/api/v1/chat`,
-`/api/v1/chat-multipart`, and the thread read routes:
+Mount a thread chat handler instead of the default one — mounting is what enables threads. Which
+one depends on how chat executes; both serve `/api/v1/chat`, `/api/v1/chat-multipart`, and the
+thread read routes.
+
+**Direct execution** (the agent runs inside the request):
 
 ```python
 from agentkernel.api import RESTAPI
@@ -64,13 +67,36 @@ from agentkernel.thread import AgentThreadRequestHandler
 RESTAPI.run(handlers=[AgentThreadRequestHandler()])
 ```
 
-Then select the store backend in `config.yaml` (constructing the handler without a `thread` block fails
-fast at startup):
+**[Queue mode](./queue-mode-guide)** (the agent runs behind the input queue) — `ThreadRequestHandler`
+replaces the pipeline's own chat route rather than joining it, since both own `/api/v1/chat`:
+
+```python
+from agentkernel.pipeline import IOHandler
+from agentkernel.thread import ThreadRequestHandler
+
+IOHandler.run(request_handler=ThreadRequestHandler())
+```
+
+Recording is split across the queue there, because the run is: the user message, the thread and
+the attachment offload happen before the request is enqueued, and the Agent Runner appends the
+reply — it is the only process holding it. Give the agent-runner process the same `thread`
+configuration as the API process; without it the reply cannot be recorded and the runner logs a
+warning naming the missing block.
+
+Then select the store backend in `config.yaml` (constructing either handler without a `thread` block
+fails fast at startup):
 
 ```yaml
 thread:
   type: in_memory     # in_memory | redis | valkey | dynamodb | firestore | cosmosdb
 ```
+
+:::caution Custom thread stores
+A message's `content` is a JSON object, not a string, when the reply was labelled (see
+[A2UI](a2ui.md)). Every built-in backend serialises the whole `ThreadMessage` as one blob and is
+unaffected, but a bring-your-own `ThreadStore` that writes `message.content` into a typed text
+column must be updated to accept an object.
+:::
 
 ## Chat Request Fields
 
@@ -97,7 +123,7 @@ get a generic title ("New conversation") instead of becoming the name. The call 
 inline on the session's first chat request (~0.5–2s), never on later messages.
 
 Naming never fails thread creation: if `litellm` is not installed (it is an optional dependency; install
-it with the `thread` extra, `pip install "agentkernel[thread]"`), no API key is present, or the model call
+it with the `thread` extra, `uv add "agentkernel[thread]"`), no API key is present, or the model call
 errors, the name falls back to a truncated prompt prefix: the first `max_length` characters, trimmed at a
 word boundary and suffixed with an ellipsis. The fallback is never silent: a missing `litellm` is warned
 about once at startup with the install hint, and every failed naming call logs a warning.
@@ -163,20 +189,20 @@ Thread routes are **open** until you supply an `Authoriser`, a small base class 
 Bearer token against your own authentication provider and resolve the caller's `user_id`:
 
 ```python
-from typing import Optional
 from agentkernel.api import RESTAPI
 from agentkernel.auth import Authoriser
 from agentkernel.thread import AgentThreadRequestHandler
 
 
 class MyAuthoriser(Authoriser):
-    def authorise(self, token: str) -> Optional[str]:
+    def authorise(self, token: str) -> str | None:
         # Validate the token with your auth provider (JWT, introspection, API key lookup, ...)
         # Return the resolved user_id, or None to reject.
         return my_auth_provider.resolve(token)
 
 
 RESTAPI.run(handlers=[AgentThreadRequestHandler(authoriser=MyAuthoriser())])
+# or, in queue mode:  IOHandler.run(request_handler=ThreadRequestHandler(authoriser=MyAuthoriser()))
 ```
 
 With an `Authoriser` configured:

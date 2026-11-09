@@ -1,15 +1,25 @@
 """Unit tests for the shared database drivers in ``agentkernel.core.util.driver``."""
 
+import decimal
+import json
 from unittest.mock import MagicMock
 
 import pytest
 import redis
+from botocore.exceptions import ClientError
 
 from agentkernel.core.util.driver import base as driver_base
 from agentkernel.core.util.driver import dynamodb as dynamodb_module
 from agentkernel.core.util.driver import redis as redis_driver_module
+from agentkernel.core.util.driver import s3 as s3_module
 from agentkernel.core.util.driver.dynamodb import DynamoDBDriver
 from agentkernel.core.util.driver.redis import RedisDriver
+from agentkernel.core.util.driver.s3 import S3Driver
+
+
+def _s3_error(code: str, operation: str = "GetObject") -> ClientError:
+    """Build a real botocore ClientError carrying the given S3 error code."""
+    return ClientError({"Error": {"Code": code, "Message": code}}, operation)
 
 
 @pytest.fixture
@@ -62,6 +72,32 @@ class TestRetry:
         assert calls["n"] == 1
         assert sleep_calls["n"] == 0
 
+    def test_s3_connect_reraises_last_error_after_retries(self, sleep_calls, monkeypatch):
+        calls = {"n": 0}
+
+        def always_fail(*a, **k):
+            calls["n"] += 1
+            raise RuntimeError("no credentials")
+
+        monkeypatch.setattr(s3_module.boto3, "client", always_fail)
+        driver = S3Driver(bucket="b")
+        with pytest.raises(RuntimeError):
+            _ = driver.client
+        assert calls["n"] == 3
+        assert sleep_calls["n"] == 2
+
+    def test_s3_client_is_created_once_and_reused(self, monkeypatch):
+        calls = {"n": 0}
+
+        def make_client(*a, **k):
+            calls["n"] += 1
+            return MagicMock()
+
+        monkeypatch.setattr(s3_module.boto3, "client", make_client)
+        driver = S3Driver(bucket="b", region="eu-west-1")
+        assert driver.client is driver.client
+        assert calls["n"] == 1
+
     def test_dynamodb_connect_reraises_last_error_after_retries(self, sleep_calls, monkeypatch):
         calls = {"n": 0}
 
@@ -75,6 +111,55 @@ class TestRetry:
             _ = driver.table
         assert calls["n"] == 3
         assert sleep_calls["n"] == 2
+
+
+class TestDynamoDecimalCodec:
+    """DynamoDB stores no floats and returns no ints; both halves of that are converted here."""
+
+    def test_floats_become_decimals_recursively(self):
+        from agentkernel.core.util.driver.dynamodb import DynamoDecimalCodec
+
+        converted = DynamoDecimalCodec.to_dynamo({"price": 2.5, "nested": {"xs": [1.5, 2]}, "name": "x"})
+
+        assert converted == {"price": decimal.Decimal("2.5"), "nested": {"xs": [decimal.Decimal("1.5"), 2]}, "name": "x"}
+
+    def test_decimal_uses_the_printed_form_not_the_binary_expansion(self):
+        from agentkernel.core.util.driver.dynamodb import DynamoDecimalCodec
+
+        assert DynamoDecimalCodec.to_dynamo({"price": 0.1})["price"] == decimal.Decimal("0.1")
+
+    def test_bools_are_not_treated_as_numbers(self):
+        from agentkernel.core.util.driver.dynamodb import DynamoDecimalCodec
+
+        converted = DynamoDecimalCodec.to_dynamo({"active": True, "off": False})
+
+        assert converted == {"active": True, "off": False}
+        assert isinstance(converted["active"], bool)
+
+    def test_decimals_come_back_as_int_or_float(self):
+        from agentkernel.core.util.driver.dynamodb import DynamoDecimalCodec
+
+        restored = DynamoDecimalCodec.from_dynamo({"count": decimal.Decimal("3"), "price": decimal.Decimal("2.5")})
+
+        assert restored == {"count": 3, "price": 2.5}
+        assert isinstance(restored["count"], int)
+        assert isinstance(restored["price"], float)
+
+    def test_round_trip_leaves_a_payload_json_serialisable(self):
+        """The point of converting on read: no consumer ever meets a Decimal."""
+        from agentkernel.core.util.driver.dynamodb import DynamoDecimalCodec
+
+        payload = {"price": 250.0, "count": 3, "coords": [1.5, -2.25], "label": "x", "ok": True}
+
+        restored = DynamoDecimalCodec.from_dynamo(DynamoDecimalCodec.to_dynamo(payload))
+
+        assert restored == payload
+        assert json.loads(json.dumps(restored)) == payload
+
+    def test_from_dynamo_passes_none_through(self):
+        from agentkernel.core.util.driver.dynamodb import DynamoDecimalCodec
+
+        assert DynamoDecimalCodec.from_dynamo(None) is None
 
 
 class TestPingReconnect:
@@ -178,6 +263,46 @@ class TestRedisCommandSurface:
         driver.expire("k")
         driver._client.expire.assert_not_called()
 
+    def test_expire_in_overrides_the_configured_ttl(self):
+        """For state with a lifetime of its own — the response store's chunk close-marker.
+
+        A configured ttl of 0 is the case that matters: "keep forever" must not mean forever here.
+        """
+        driver = _driver(ttl=0)
+        driver.expire_in("k", 60)
+        driver._client.expire.assert_called_once_with(name="k", time=60)
+
+    def test_expire_in_is_noop_for_a_non_positive_ttl(self):
+        driver = _driver(ttl=604800)
+        driver.expire_in("k", 0)
+        driver._client.expire.assert_not_called()
+
+    def test_rpush_with_expiry_sends_both_commands_in_one_pipeline(self):
+        """RPUSH creates a missing key with no expiry, so the pair must be indivisible.
+
+        Anything that interrupts two separate round trips — a dropped connection, a failover, a
+        killed process — would otherwise leave a key that was only ever meant to be short-lived
+        alive forever.
+        """
+        driver = _driver(ttl=0)
+        pipeline = driver._client.pipeline.return_value
+
+        driver.rpush_with_expiry("k", "v", 60)
+
+        driver._client.pipeline.assert_called_once_with()
+        pipeline.rpush.assert_called_once_with("k", "v")
+        pipeline.expire.assert_called_once_with(name="k", time=60)
+        pipeline.execute.assert_called_once_with()
+        driver._client.rpush.assert_not_called()
+
+    def test_rpush_with_expiry_falls_back_to_a_plain_append_without_a_ttl(self):
+        """A raw EXPIRE key 0 would delete the key the append just created."""
+        driver = _driver(ttl=604800)
+        driver.rpush_with_expiry("k", "v", 0)
+
+        driver._client.rpush.assert_called_once_with("k", "v")
+        driver._client.pipeline.assert_not_called()
+
     def test_key_applies_prefix(self):
         driver = _driver(prefix="ak:test:")
         assert driver.key("s1:meta") == "ak:test:s1:meta"
@@ -203,6 +328,26 @@ class TestRedisCommandSurface:
         assert driver.lpop("k") == "a1"
         driver._client.lpop.return_value = None
         assert driver.lpop("k") is None
+
+    def test_blpop_returns_the_value_and_decodes_bytes(self):
+        """The client answers (key, value); callers want the value."""
+        driver = _driver()
+        driver._client.blpop.return_value = (b"k", b"a1")
+        assert driver.blpop("k", timeout=5) == "a1"
+        driver._client.blpop.return_value = ("k", "a1")
+        assert driver.blpop("k", timeout=5) == "a1"
+
+    def test_blpop_returns_none_on_timeout(self):
+        driver = _driver()
+        driver._client.blpop.return_value = None
+        assert driver.blpop("k", timeout=0.5) is None
+
+    def test_blpop_never_passes_a_zero_timeout(self):
+        """Redis reads 0 as 'block forever', which would hang a worker past any budget."""
+        driver = _driver()
+        driver._client.blpop.return_value = None
+        driver.blpop("k", timeout=0)
+        assert driver._client.blpop.call_args.kwargs["timeout"] > 0
 
 
 class TestDynamoDBDriver:
@@ -249,6 +394,39 @@ class TestDynamoDBDriver:
         assert driver._table.query.call_count == 2
         assert driver._table.query.call_args.kwargs["ExclusiveStartKey"] == {"pk": "p", "sk": "b"}
 
+    def test_a_payload_carrying_a_float_survives_the_round_trip(self):
+        """The driver's own use of the codec, not the codec in isolation.
+
+        boto3 refuses a float on the way in and returns a Decimal on the way out, and a Decimal is
+        no more serialisable than a float was storable — so a consumer doing ``json.dumps`` on a
+        polled record (``rest_lambda.py:288``) fails unless both halves are wired up here.
+        """
+        driver = self._driver()
+        body = {"pk": "p", "sk": "s", "body": {"result": {"score": 0.5, "count": 3}}}
+
+        driver.put(body)
+
+        stored = driver._table.put_item.call_args.kwargs["Item"]["body"]["result"]
+        assert stored == {"score": decimal.Decimal("0.5"), "count": 3}
+
+        driver._table.get_item.return_value = {"Item": {"pk": "p", "sk": "s", "body": {"result": stored}}}
+        read = driver.get("p", "s")["body"]["result"]
+
+        assert read == {"score": 0.5, "count": 3}
+        assert isinstance(read["score"], float)
+        assert isinstance(read["count"], int)
+        assert json.dumps(read)
+
+    def test_query_items_converts_on_the_way_out_too(self):
+        """The paginating read path is a separate call site; a refactor can drop it on its own."""
+        driver = self._driver()
+        driver._table.query.return_value = {"Items": [{"sk": "a", "score": decimal.Decimal("0.5")}]}
+
+        items = driver.query_items("p")
+
+        assert items == [{"sk": "a", "score": 0.5}]
+        assert json.dumps(items)
+
     def test_sort_key_less_mode(self):
         driver = self._driver(sort_key=None)
         driver._table.get_item.return_value = {"Item": {"pk": "p", "body": "b"}}
@@ -258,3 +436,133 @@ class TestDynamoDBDriver:
         driver._table.delete_item.assert_called_once_with(Key={"pk": "p"})
         with pytest.raises(ValueError):
             driver.query_sort_keys("p")
+
+
+class TestS3Driver:
+    """Byte-oriented object semantics of the shared S3 driver."""
+
+    def _driver(self, client: MagicMock = None) -> S3Driver:
+        """Build an S3Driver with an already-established mocked client."""
+        return S3Driver(bucket="b", client=client if client is not None else MagicMock())
+
+    def test_a_bucket_is_required(self):
+        with pytest.raises(ValueError, match="requires a bucket"):
+            S3Driver(bucket="")
+
+    def test_an_injected_client_is_used_without_connecting(self, monkeypatch):
+        def never(*a, **k):
+            raise AssertionError("boto3.client must not be called when a client is injected")
+
+        monkeypatch.setattr(s3_module.boto3, "client", never)
+        client = MagicMock()
+        assert self._driver(client).client is client
+
+    def test_get_bytes_returns_the_body(self):
+        client = MagicMock()
+        client.get_object.return_value = {"Body": MagicMock(read=lambda: b"payload")}
+        driver = self._driver(client)
+
+        assert driver.get_bytes("k") == b"payload"
+        client.get_object.assert_called_once_with(Bucket="b", Key="k")
+
+    @pytest.mark.parametrize("code", ["NoSuchKey", "NotFound", "404"])
+    def test_an_absent_object_becomes_file_not_found(self, code: str):
+        client = MagicMock()
+        client.get_object.side_effect = _s3_error(code)
+
+        # Consumers of every driver see one exception type for "absent".
+        with pytest.raises(FileNotFoundError, match="no such object"):
+            self._driver(client).get_bytes("k")
+
+    def test_a_missing_bucket_is_a_misconfiguration_not_an_absent_object(self):
+        client = MagicMock()
+        client.get_object.side_effect = _s3_error("NoSuchBucket")
+
+        # Mapped to FileNotFoundError, a typo'd bucket would read as an empty collection
+        # everywhere a consumer treats absence as an ordinary empty answer.
+        with pytest.raises(ClientError):
+            self._driver(client).get_bytes("k")
+
+    def test_an_unrelated_client_error_propagates(self):
+        client = MagicMock()
+        client.get_object.side_effect = _s3_error("AccessDenied")
+
+        with pytest.raises(ClientError):
+            self._driver(client).get_bytes("k")
+
+    def test_get_range_bytes_sends_an_inclusive_range_header(self):
+        client = MagicMock()
+        client.get_object.return_value = {"Body": MagicMock(read=lambda: b"0123")}
+        driver = self._driver(client)
+
+        assert driver.get_range_bytes("k", 0, 3) == b"0123"
+        assert client.get_object.call_args.kwargs["Range"] == "bytes=0-3"
+
+    def test_an_invalid_range_falls_back_to_a_full_get(self):
+        client = MagicMock()
+        client.get_object.side_effect = [_s3_error("InvalidRange"), {"Body": MagicMock(read=lambda: b"")}]
+
+        # A zero-length object rejects any range; the whole object is the prefix.
+        assert self._driver(client).get_range_bytes("k", 0, 15) == b""
+        assert client.get_object.call_count == 2
+        assert "Range" not in client.get_object.call_args.kwargs
+
+    def test_a_missing_object_in_a_ranged_get_becomes_file_not_found(self):
+        client = MagicMock()
+        client.get_object.side_effect = _s3_error("NoSuchKey")
+
+        with pytest.raises(FileNotFoundError):
+            self._driver(client).get_range_bytes("k", 0, 15)
+
+    def test_put_bytes_writes_the_body(self):
+        client = MagicMock()
+        self._driver(client).put_bytes("k", b"payload")
+        client.put_object.assert_called_once_with(Bucket="b", Key="k", Body=b"payload")
+
+    def test_exists_is_false_for_a_missing_object(self):
+        client = MagicMock()
+        client.head_object.side_effect = _s3_error("404", "HeadObject")
+        assert self._driver(client).exists("k") is False
+
+    def test_exists_is_true_for_a_present_object(self):
+        client = MagicMock()
+        client.head_object.return_value = {"ContentLength": 3}
+        assert self._driver(client).exists("k") is True
+
+    def test_exists_propagates_an_unrelated_client_error(self):
+        client = MagicMock()
+        client.head_object.side_effect = _s3_error("AccessDenied", "HeadObject")
+        with pytest.raises(ClientError):
+            self._driver(client).exists("k")
+
+    def test_list_keys_follows_continuation_pagination(self):
+        client = MagicMock()
+        client.list_objects_v2.side_effect = [
+            {"Contents": [{"Key": "p/a"}, {"Key": "p/b"}], "IsTruncated": True, "NextContinuationToken": "t1"},
+            {"Contents": [{"Key": "p/c"}], "IsTruncated": False},
+        ]
+        driver = self._driver(client)
+
+        assert driver.list_keys("p/") == ["p/a", "p/b", "p/c"]
+        assert client.list_objects_v2.call_count == 2
+        assert client.list_objects_v2.call_args.kwargs["ContinuationToken"] == "t1"
+
+    def test_a_truncated_page_without_a_token_stops_the_loop(self):
+        client = MagicMock()
+        # A malformed response must not spin forever.
+        client.list_objects_v2.return_value = {"Contents": [{"Key": "p/a"}], "IsTruncated": True}
+
+        assert self._driver(client).list_keys("p/") == ["p/a"]
+        assert client.list_objects_v2.call_count == 1
+
+    def test_an_empty_listing_is_an_empty_list(self):
+        client = MagicMock()
+        client.list_objects_v2.return_value = {}
+        assert self._driver(client).list_keys() == []
+
+    def test_list_keys_preserves_the_paging_order(self):
+        client = MagicMock()
+        client.list_objects_v2.return_value = {"Contents": [{"Key": "z"}, {"Key": "a"}]}
+
+        # Ordering guarantees belong to the consuming store, not the driver.
+        assert self._driver(client).list_keys() == ["z", "a"]

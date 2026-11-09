@@ -109,7 +109,7 @@ from agentkernel.core import Runner
 **Key Features:**
 - Framework-specific execution
 - Async/await support
-- Event streaming via `stream()` (OpenAI Agents SDK, LangGraph, Google ADK, Pydantic AI)
+- Event streaming via `stream()` (OpenAI Agents SDK, LangGraph, Google ADK, Pydantic AI, Microsoft Agent Framework, Claude Agent SDK)
 - Error handling and fault-tolerant execution patterns
 
 [Learn more about Runners →](./runner)
@@ -132,7 +132,7 @@ session = Session(id="user-123")
 - Volatile and non-volatile caches
 - Context preservation
 
-[Learn more about Sessions →](./session)
+[Learn more about Sessions →](./session) | [Choose a memory backend →](./memory-backends.md)
 
 ### 5. **Module**
 
@@ -179,9 +179,9 @@ agent = runtime.agents().get("my-agent")
 Around these abstractions, the kernel provides:
 
 - **Hooks**: `PreHook`/`PostHook` classes attached per-agent or system-wide. Pre-hooks can rewrite or halt requests (guardrails, RAG injection); post-hooks transform replies and can inspect, rewrite or drop any streamed event — tool arguments and results included — via `on_stream_event()`, or end a run by raising `StreamHalt`. [Hooks guide →](../integrations/hooks)
-- **AgentService**: the conversation object for stateful clients (CLI, A2A, MCP): owns agent selection and session lifecycle; `run_multi()` executes multi-modal requests and `stream_multi()` yields token-level `StreamChunk`s.
+- **AgentService**: the conversation object for stateful clients (the CLI): owns agent selection and session lifecycle; `run_multi()` executes multi-modal requests and `stream_multi()` yields token-level `StreamChunk`s.
 - **ChatService**: the chat request layer on top of AgentService. Its execution core (`execute`/`execute_stream`) validates, builds or accepts prebuilt request lists, and returns typed replies; it is what messaging integrations, the thread handler, and the AG-UI handler call. Its presentation wrappers (`process_*`) add the HTTP shapes (JSON, SSE, `HTTPException`) used by the REST API and deployment handlers.
-- **Execution modes**: the same application supports direct execution, SSE streaming (`execution.mode: stream`), and on AWS, queue-backed (`rest_sync`/`rest_async`) and WebSocket (`async`/`stream`) modes. [Execution flow →](../architecture/execution-flow)
+- **Execution modes**: the same application supports direct execution, SSE streaming (`execution.mode: rest_sync` with `execution.message_type: delta`), and on AWS, queue-backed (`rest_sync`/`rest_async`) and WebSocket (`async`, with `message_type` `complete` or `delta`) modes. [Execution flow →](../architecture/execution-flow)
 - **Conversation threads**: optional persistent, named conversation history with REST read APIs. [Threads →](../advanced/threads)
 - **Scheduling**: optional deferred/recurring chat execution (`at`/`cron`) intercepted at the top of ChatService's execution core, with a management REST API and agent-facing scheduling tools. [Scheduling →](../advanced/scheduling)
 - **Multimodal attachments**: image/file preprocessing via a system pre-hook with pluggable attachment stores. [Multimodal →](../advanced/multimodal)
@@ -290,7 +290,8 @@ Common configuration options:
 | `AK_SESSION__TYPE` | Session storage backend (`in_memory`, `redis`, `valkey`, `dynamodb`, `cosmosdb`, `firestore`) | `in_memory` |
 | `AK_SESSION__REDIS__URL` | Redis connection URL | `redis://localhost:6379` |
 | `AK_SESSION__DYNAMODB__TABLE_NAME` | DynamoDB table name | - |
-| `AK_EXECUTION__MODE` | Execution mode (`rest_sync`, `rest_async`, `stream`, `async`) | - (direct when unset) |
+| `AK_EXECUTION__MODE` | Execution mode (`rest_sync`, `rest_async`, `async`, `realtime`) | - (runs as `rest_sync`) |
+| `AK_EXECUTION__MESSAGE_TYPE` | Reply delivery (`complete`: one whole reply, `delta`: one message per chunk) | - (`delta` for `realtime`, `complete` otherwise) |
 
 [Learn more about Configuration →](./configuration)
 
@@ -341,30 +342,48 @@ if __name__ == "__main__":
 
 Sessions and caches help with short- to medium-term conversational context, but many applications also need durable, cross-session knowledge that persists across conversations and agents. Examples include product manuals, user or customer profiles, organizational policies, or domain knowledge graphs.
 
-Agent Kernel's **Knowledge Base** support provides a unified way to connect multiple storage backends (vector stores and graph databases) and expose them to agents as callable tools. This lets agents query and update knowledge with the same interface, regardless of which backend system stores the data.
+Agent Kernel's **Knowledge Base** support provides a unified way to connect multiple storage backends - vector stores, graph databases, SQL engines, and directories of markdown documents - and expose them to agents as callable tools. Each backend declares what it supports, and the agent is given tools for exactly those operations.
+
+For help deciding between session memory and a knowledge base, see [Choosing a Memory Backend](./memory-backends.md).
 
 ### Core Components
 
 **`KnowledgeBase` Interface**
 
-A backend-agnostic interface that every knowledge backend must implement (ChromaDB, Neo4j, Starburst/Trino, etc.). This ensures agents can read and write across different storage systems using the same API.
+A backend-agnostic interface that every knowledge backend implements (ChromaDB, Neo4j, Starburst/Trino, Open Knowledge Format bundles, and your own). Three members are abstract; every retrieval and write operation is optional and gated on the capabilities the backend declares.
 
 ```python
-from agentkernel.knowledgebase import KnowledgeBase
+from agentkernel.knowledgebase import KnowledgeBase, KnowledgeCapabilities
 
-# Every backend implements:
-# - schema(): metadata about what the backend contains
-# - read(query, limit): retrieve data
-# - write(records, **kwargs): persist data
-# - format_results(): present results to agents
+# Every backend implements exactly three members:
+# - backend_name: unique identifier used by tools and schemas
+# - connect(**kwargs): establish client connections
+# - get_description(): human-readable description for routing
+#
+# ...then declares what it supports, and implements the matching operations:
+# - search(query, limit)      relevance retrieval
+# - query(statement, limit)   query-language retrieval (Cypher, SQL, ...)
+# - fetch(ids)                retrieval by identity
+# - browse(path, limit)       namespace enumeration
+# - write(records)            persistence
+#
+# An undeclared operation raises KnowledgeCapabilityError rather than returning
+# an empty result. There is no read() on the ABC: the read_kb tool routes to
+# query() or search() on the declaration, so one tool serves every backend.
+# schema() and format_results() are provided by the base.
 ```
+
+See [Knowledge Bases](../advanced/knowledge-bases.md) for the full capability model.
 
 **`KnowledgeBuilder`**
 
-Composes multiple backends and generates callable tools that agents can use. It creates three main functions:
-- `get_schemas()`: returns metadata for all connected backends (agent uses this to decide which backend to query)
+Composes multiple backends and generates callable tools that agents can use. Four are always created:
+- `get_schemas()`: returns metadata for all connected backends, including each one's declared capabilities (the agent uses this to decide which backend to query)
 - `read_kb(backend, query)`: retrieve information from a specific backend
 - `write_kb(backend, text, query)`: persist information to a specific backend
+- `get_all_kb_descriptions()`: short descriptions of every registered backend
+
+Up to three more are added when a registered backend declares the capability behind them - `search_kb`, `fetch_kb` and `browse_kb` - so the agent's prompt never names an operation nothing can serve.
 
 Critically, `KnowledgeBuilder` also handles **semantic placeholders** via `semantic_map`. This reduces agent hallucinations and errors by letting agents use stable logical names instead of remembering exact catalog/schema/table names or long physical identifiers:
 
@@ -385,7 +404,7 @@ The agent generates queries like `SELECT * FROM <MONGO_SOURCE> WHERE status = 'a
 In practice, an agent often needs to decide *which* backend to query for a given task. The **KB Router** pattern uses a coordinator agent that:
 1. Calls `get_schemas()` once to inspect all available backends and their purposes
 2. For each user request, decides which backend(s) to query
-3. Routes reads/writes to the appropriate backend via `read_kb` / `write_kb`
+3. Routes each request to the appropriate backend and operation - `read_kb` / `write_kb`, plus `search_kb`, `fetch_kb` or `browse_kb` where a backend declares them
 
 This keeps agents focused on domain logic while the router handles backend selection.
 
@@ -406,7 +425,7 @@ router_agent = CrewAgent(
     When the user asks a question:
     1. Call get_schemas() to see all available backends
     2. Decide which backend(s) best answer the question
-    3. Call read_kb() to query the chosen backend
+    3. Call read_kb() to query the chosen backend, or browse_kb()/fetch_kb() where offered
     4. When storing new knowledge:
        - New relationships or entities → write to GraphDB
        - Unstructured notes or documents → write to VectorDB
@@ -424,9 +443,9 @@ The agent now has the intelligence to:
 ### Example Flow
 
 ```python
+from agentkernel.knowledgebase import KnowledgeBuilder
 from agentkernel.knowledgebase.chroma import ChromaManager
 from agentkernel.knowledgebase.neo4j import Neo4jManager
-from agentkernel.knowledgebase.knowledgebuilder import KnowledgeBuilder
 
 # 1. Define backends
 vector_store = ChromaManager(name="VectorDB", description="...")
@@ -439,7 +458,8 @@ kb = KnowledgeBuilder(
 )
 
 # 3. Agent uses tools
-kb.build()  # Creates get_schemas(), read_kb(), write_kb(), etc.
+kb.build()  # Creates get_schemas(), read_kb(), write_kb(), get_all_kb_descriptions(),
+           # plus search_kb/fetch_kb/browse_kb where a backend declares them
 
 # 4. Agent can now:
 # - Call get_schemas() to discover backends
@@ -453,21 +473,23 @@ Once you have a `KnowledgeBuilder`, connecting it to an agent is straightforward
 
 ```python
 from crewai import Agent as CrewAgent
-from agentkernel.knowledgebase.knowledgebuilder import KnowledgeBuilder
+from agentkernel.knowledgebase import KnowledgeBuilder
 from agentkernel.crewai import CrewAIToolBuilder
 
 # 1. Create KnowledgeBuilder with your backends
 kb = KnowledgeBuilder([mongo_backend, sheets_backend], semantic_map={...})
 
 # 2. Extract the knowledge base tools
-kb_tools = kb.build()  # Returns [get_schemas, read_kb, write_kb, get_all_kb_descriptions]
+kb_tools = kb.build()  # Always [get_schemas, read_kb, write_kb, get_all_kb_descriptions],
+                       # plus search_kb/fetch_kb/browse_kb when a backend declares them
 
 # 3. Create your agent with these tools automatically available
 knowledge_agent = CrewAgent(
     role="knowledge_router",
     goal="Query and manage knowledge across vector stores and graphs",
     # Bind framework-agnostic KB callables into CrewAI-compatible tools
-    # so the agent can invoke get_schemas/read_kb/write_kb at runtime.
+    # so the agent can invoke get_schemas/read_kb/write_kb and any capability-gated
+    # tools at runtime.
     tools=crewAItoolbuilder.bind(kb_tools)
    
 )
@@ -475,7 +497,7 @@ knowledge_agent = CrewAgent(
 
 The knowledge base tools integrate seamlessly with Agent Kernel's `ToolBuilder` pattern, which means:
 - **Framework-agnostic**: same KB tools work with OpenAI, CrewAI, LangGraph, etc.
-- **No boilerplate**: Agent automatically gets `read_kb`, `write_kb`, and schema introspection
+- **No boilerplate**: Agent automatically gets `read_kb`, `write_kb`, schema introspection, and whichever capability-gated tools the registered backends support
 - **Pluggable**: swap backends without changing agent code
 - **Type-aware**: agent knows the function signatures and can call them correctly
 

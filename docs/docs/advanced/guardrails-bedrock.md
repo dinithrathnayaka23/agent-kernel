@@ -21,7 +21,7 @@ AWS Bedrock Guardrails enable:
 Install Agent Kernel with AWS support:
 
 ```bash
-pip install agentkernel[aws]
+uv add "agentkernel[aws]"
 ```
 
 This installs the required `boto3` library for AWS integration.
@@ -320,7 +320,7 @@ guardrail:
 
 Ensure `boto3` is installed:
 ```bash
-pip install agentkernel[aws]
+uv add "agentkernel[aws]"
 ```
 
 ### Authentication Errors
@@ -367,10 +367,10 @@ AWS Bedrock Guardrails pricing (as of 2026):
 - [Walled AI Guardrails](./guardrails-walledai) - Alternative provider
 - [Guardrails Overview](./guardrails)
 - [Configuration Guide](../core-concepts/configuration)
-- [Working Example](https://github.com/yaalalabs/agent-kernel/tree/main/examples/cli/guardrail/bedrock)
+- [Working Example](https://github.com/yaalalabs/agent-kernel/tree/develop/examples/cli/guardrail/bedrock)
 
 ## Support
 
 - **Issues**: [GitHub Issues](https://github.com/yaalalabs/agent-kernel/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/yaalalabs/agent-kernel/discussions)
-- **Examples**: [Repository Examples](https://github.com/yaalalabs/agent-kernel/tree/main/examples)
+- **Examples**: [Repository Examples](https://github.com/yaalalabs/agent-kernel/tree/develop/examples)

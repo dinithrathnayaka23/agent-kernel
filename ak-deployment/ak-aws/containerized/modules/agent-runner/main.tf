@@ -1,6 +1,8 @@
 locals {
   agent_runner_image = var.agent_runner.image_uri != null ? var.agent_runner.image_uri : var.default_image_uri
 
+  security_group_id = var.security_group_id != null ? var.security_group_id : aws_security_group.agent_runner[0].id
+
   agent_runner_environment = merge(
     var.agent_runner.environment_variables,
     {
@@ -28,9 +30,17 @@ locals {
     var.dynamodb_schedule_table_arn != null ? {
       AK_SCHEDULE__STORE__DYNAMODB__TABLE_NAME = var.dynamodb_schedule_table_name
     } : {},
-    # WebSocket modes: full response (async) vs one chunk per stream event (stream).
-    contains(["async", "stream"], var.execution_mode) ? {
+    # Secret resolution scope; `secret.provider.type` comes from the app's config.yaml
+    var.ssm_enabled ? {
+      AK_SECRET__PREFIX = var.prefix
+    } : {},
+    # WebSocket mode (async) pushes replies over the connection. Realtime: the runner
+    # dispatches to the realtime runner, which forwards audio to the model sockets.
+    contains(["async", "realtime"], var.execution_mode) ? {
       AK_EXECUTION__MODE = var.execution_mode
+    } : {},
+    var.message_type != null ? {
+      AK_EXECUTION__MESSAGE_TYPE = var.message_type
     } : {}
   )
 }
@@ -272,9 +282,36 @@ resource "aws_iam_role_policy_attachment" "agent_runner_schedule_store_attachmen
   policy_arn = aws_iam_policy.agent_runner_schedule_store_policy[0].arn
 }
 
+# Secret resolution: read-only access to this deployment's SSM parameters (AWSSMSecretProvider)
+resource "aws_iam_policy" "ssm_secret_policy" {
+  count = var.ssm_enabled ? 1 : 0
+  name  = "${var.prefix}-agent-runner-ssm-secret"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "ReadAKSecrets"
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter"]
+        Resource = "arn:aws:ssm:${var.region}:${var.account_id}:parameter/ak/${var.prefix}/*"
+      }
+    ]
+  })
+
+  tags = var.tags
+}
+
+resource "aws_iam_role_policy_attachment" "ssm_secret_attachment" {
+  count      = var.ssm_enabled ? 1 : 0
+  role       = aws_iam_role.agent_runner_task_role.name
+  policy_arn = aws_iam_policy.ssm_secret_policy[0].arn
+}
+
 # ECS Resources
 
 resource "aws_security_group" "agent_runner" {
+  count       = var.security_group_id == null ? 1 : 0
   name        = "${var.prefix}-agent-runner-sg"
   description = "Agent Runner ECS service SG - egress only (queue-polling)"
   vpc_id      = var.vpc_id
@@ -340,7 +377,7 @@ resource "aws_ecs_service" "agent_runner" {
 
   network_configuration {
     subnets          = var.subnet_ids
-    security_groups  = [aws_security_group.agent_runner.id]
+    security_groups  = [local.security_group_id]
     assign_public_ip = false
   }
 

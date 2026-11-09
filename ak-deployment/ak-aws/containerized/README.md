@@ -101,9 +101,7 @@ module "containerized_agents" {
   version   = "0.8.1"
   providers = { aws = aws, docker = docker }
 
-  product_alias = "my-agent"
-  env_alias     = "dev"
-  module_name   = "chatbot"
+  prefix        = "my-agent-dev-chatbot"
   region        = "us-east-1"
 
   # REST Service configuration
@@ -131,9 +129,7 @@ module "containerized_agents" {
   version   = "0.8.1"
   providers = { aws = aws, docker = docker }
 
-  product_alias = "my-agent"
-  env_alias     = "prod"
-  module_name   = "assistant"
+  prefix        = "my-agent-prod-assistant"
   region        = "us-east-1"
 
   # REST Service (handles HTTP requests)
@@ -150,7 +146,7 @@ module "containerized_agents" {
 
   # Enable queue mode
   queue_mode     = true
-  execution_mode = "rest_async"  # rest_sync | rest_async | async | stream
+  execution_mode = "rest_async"  # rest_sync | rest_async | async | realtime
 
   # Queue configuration
   queue_config = {
@@ -198,16 +194,18 @@ module "containerized_agents" {
 
 ```hcl
 rest_service = {
-  package_path          = null         # Path to build Docker image (required)
-  cpu                   = 256          # Fargate CPU units (256, 512, 1024, etc.)
-  memory                = 512          # Fargate memory in MiB
-  desired_count         = 1            # Number of tasks
-  container_port        = 8000         # Container port
-  health_check_endpoint = "/health"    # Health check path
-  health_check_grace_period_seconds = 120 # ECS ignores ALB unhealthy signals for this long after task start
-  image_uri             = null         # Pre-built image URI (alternative to package_path)
-  command               = null         # Override Docker CMD
-  environment_variables = {}           # Service-specific env vars
+  package_path                  = null         # Path to build Docker image (required)
+  cpu                           = 256          # Fargate CPU units (256, 512, 1024, etc.)
+  memory                        = 512          # Fargate memory in MiB
+  desired_count                 = 1            # Number of tasks
+  container_port                = 8000         # Container port
+  health_check_endpoint         = "/health"    # Health check path
+  health_check_grace_period_seconds = 120      # ECS ignores ALB unhealthy signals for this long after task start
+  image_uri                     = null         # Pre-built image URI (alternative to package_path)
+  command                       = null         # Override Docker CMD
+  environment_variables         = {}           # Service-specific env vars
+  alb_security_group_id         = null         # ALB security group ID. If not provided, a new one will be created
+  ecs_service_security_group_id = null         # ECS service security group ID. If not provided, a new one will be created
 }
 ```
 
@@ -222,6 +220,7 @@ agent_runner = {
   image_uri             = null         # Or provide pre-built image URI
   command               = null         # Override Docker CMD
   environment_variables = {}           # Service-specific env vars
+  security_group_id     = null         # Agent Runner security group ID (queue mode only). If not provided, a new one will be created
 }
 ```
 
@@ -287,8 +286,8 @@ enable_api_gateway_logs = true
 ```
 
 - Off by default, matching the AWS serverless deployment. When `false`:
-  - **REST/queue modes:** no `/aws/apigateway/{product_alias}-{env_alias}-http-api` log group is created and the HTTP API stage carries no `access_log_settings`; the `api_gateway_cloudwatch_log_group_arn` / `api_gateway_cloudwatch_log_group_name` outputs return `null`.
-  - **WebSocket modes:** no `/aws/apigateway/{product_alias}-{env_alias}-ws-api` log group is created, the WebSocket API stage carries no `access_log_settings`, and the account-level CloudWatch role (`aws_iam_role.apigw_cloudwatch` / `aws_api_gateway_account.this`) is not created; the `websocket_api_cloudwatch_log_group_arn` / `websocket_api_cloudwatch_log_group_name` outputs return `null`.
+  - **REST/queue modes:** no `/aws/apigateway/{prefix}-http-api` log group is created and the HTTP API stage carries no `access_log_settings`; the `api_gateway_cloudwatch_log_group_arn` / `api_gateway_cloudwatch_log_group_name` outputs return `null`.
+  - **WebSocket modes:** no `/aws/apigateway/{prefix}-ws-api` log group is created, the WebSocket API stage carries no `access_log_settings`, and the account-level CloudWatch role (`aws_iam_role.apigw_cloudwatch` / `aws_api_gateway_account.this`) is not created; the `websocket_api_cloudwatch_log_group_arn` / `websocket_api_cloudwatch_log_group_name` outputs return `null`.
 - When `true`, the relevant log group is created with 90-day retention (tagged with `var.tags`). REST/queue modes log request ID, source IP, request time, protocol, HTTP method, route key, status, response length, and integration error message; WebSocket modes log the same fields plus `connectionId` in place of HTTP method.
 - Unlike the serverless REST API, the HTTP API (`aws_apigatewayv2_*` with `protocol_type = "HTTP"`) does **not** require the account-level `aws_api_gateway_account` CloudWatch role for access logging, so enabling it there does not contend with other deployments in the same account/region. The WebSocket API (`protocol_type = "WEBSOCKET"`) **does** require that account-level role — it is created only when `enable_api_gateway_logs = true` in a WebSocket mode, and it is a region-wide singleton shared with any other API Gateway in the account that also enables access logging.
 - **Upgrade note:** deployments created before this toggle existed always had logging on. Applying with the new default (`false`) removes the stage's access log settings and destroys the log group (and, in WebSocket modes, the account-level CloudWatch role resources). Set `enable_api_gateway_logs = true` to keep the existing behaviour.
@@ -316,11 +315,58 @@ enable_api_gateway_logs = true
 
   Skipping this makes Terraform destroy and recreate these resources, discarding any retained logs.
 
+### Security Groups
+
+These three fields live on the `rest_service` and `agent_runner` config objects (see
+[Configuration](#configuration) above) alongside that service's other settings, rather than as
+standalone top-level variables:
+
+| Field | Object | Description | Type | Default | Required |
+|---|---|---|---|---|---|
+| `alb_security_group_id` | `rest_service` | ALB security group ID. If not provided, a new one will be created | `string` | `null` | no |
+| `ecs_service_security_group_id` | `rest_service` | ECS service security group ID. If not provided, a new one will be created | `string` | `null` | no |
+| `security_group_id` | `agent_runner` | Agent Runner security group ID (queue mode only). If not provided, a new one will be created | `string` | `null` | no |
+
+```hcl
+rest_service = {
+  package_path                  = "./dist"
+  alb_security_group_id         = "sg-0123456789abcdef0"
+  ecs_service_security_group_id = "sg-0123456789abcdef1"
+}
+
+agent_runner = {
+  security_group_id = "sg-0123456789abcdef2"
+}
+```
+
+Each of the three is independent — you may provide any subset of them and let the module create the
+rest. Useful when the deploying pipeline can't create security groups (no `ec2:CreateSecurityGroup`),
+when org policy disallows the default `0.0.0.0/0` egress these modules create, or when a downstream
+resource (e.g. RDS, ElastiCache) already has ingress rules referencing a specific, pre-approved
+security group. `agent_runner.security_group_id` only has an effect when `queue_mode = true`.
+
+A provided security group must reproduce the rules the module would otherwise create for it, since
+traffic fails at runtime (not at plan/apply) if it doesn't:
+
+- `rest_service.alb_security_group_id`: inbound TCP 80 from the VPC CIDR (the API Gateway VPC Link ENIs
+  share this SG, and in WebSocket modes the NLB reaches the ALB the same way), plus egress to the tasks
+  on `container_port`.
+- `rest_service.ecs_service_security_group_id`: inbound `container_port` from the ALB security group
+  (created or provided).
+- `agent_runner.security_group_id`: egress to SQS, DynamoDB and the model endpoints.
+
+If you provide only `rest_service.ecs_service_security_group_id`, the ALB security group is still
+module-created, so its ID isn't known until the first apply and can't be referenced up front in a
+security group you already created. Provide `rest_service.alb_security_group_id` too (using the
+`alb_security_group_id` output from a prior apply, or a pre-created SG) if you need its ID ahead of
+time.
+
 ### Scheduling (EventBridge Scheduler)
 
 | Variable | Description | Type | Default | Required |
 |---|---|---|---|---|
 | `enable_scheduling` | Create the EventBridge Scheduler schedule group and the execution role Scheduler assumes to deliver triggers to the Input Queue, grant both ECS task roles `scheduler:*Schedule` + `iam:PassRole` on them, and inject their coordinates. **Requires `queue_mode = true`.** | `bool` | `false` | no |
+| `ssm_enabled` | Grant the ECS task role that runs the agent (the agent runner when `queue_mode = true`, otherwise the REST service) `ssm:GetParameter` on `arn:aws:ssm:<region>:<account>:parameter/ak/<prefix>/*` and inject `AK_SECRET__PREFIX = <prefix>`. The capability is enabled by the application declaring `secret.provider.type: aws_ssm` in `config.yaml`, which then resolves a key such as `OPENAI_API_KEY` from `/ak/<prefix>/openai_api_key` whenever the environment variable of that name is unset or empty. **Terraform does not create the parameters** — create them yourself as `SecureString` (AWS-managed `alias/aws/ssm` key). | `bool` | `false` | no |
 | `create_dynamodb_schedule_table` | Create the DynamoDB schedule store table (partition `task_id`, no sort key, no GSI, TTL on `expiry_time`) and inject its generated name as `AK_SCHEDULE__STORE__DYNAMODB__TABLE_NAME` | `bool` | `false` | no |
 
 ```hcl
@@ -357,6 +403,11 @@ create_dynamodb_schedule_table = true
   side.
 
 ## Deployment Modes
+
+| Name | Description | Type | Default | Required |
+|------|-------------|------|---------|:--------:|
+| `execution_mode` | Execution mode: `rest_sync` (client waits on the same HTTP connection), `rest_async` (client polls a separate GET endpoint; requires `queue_mode = true`), `async` (WebSocket only; `message_type` picks one message per reply or one per chunk), or `realtime` (persistent model sockets behind a stateful edge such as the LiveKit gateway). `stream` was removed and fails at `terraform plan`: use `async` with `message_type = "delta"`. | `string` | `"rest_sync"` | no |
+| `message_type` | Reply delivery: `complete` (whole reply) or `delta` (one message per chunk). `null` leaves Agent Kernel's default (`delta` for `realtime`, `complete` otherwise). Injected as `AK_EXECUTION__MESSAGE_TYPE` into both the REST service and the agent runner whenever non-null, in every mode, so the two containers always agree. For chunked replies use `delta` with `async` (WebSocket chunks): in queue mode `ECSIOHandler` refuses `rest_sync` + `delta` at startup (its REST container has no SSE route), and Agent Kernel rejects `rest_async` + `delta` and `realtime` + `complete` at config load. Terraform validates the value only; Agent Kernel checks the combination at startup. | `string` | `null` | no |
 
 ### Non-Queue Mode (Default)
 
@@ -420,7 +471,7 @@ curl -X GET ".../chat?request_id=..."
 # Returns the stored response body directly, e.g.: {"...": "..."}
 ```
 
-### WebSocket Mode - Async (`async`) and Stream (`stream`)
+### WebSocket Mode (`async`)
 
 Creates a **WebSocket API Gateway** that proxies frames to the ECS ingress service over a
 dedicated VPC Link (V1) and an internal NLB that fronts the same internal ALB — WebSocket
@@ -435,12 +486,14 @@ Both `queue_mode` settings are supported:
 - `queue_mode = false` — the ingress service runs the agent inline and pushes the reply
   itself. No queues and no agent-runner service.
 
-Modes:
+Message types (`message_type`):
 
-- `async` — the full response is delivered in one WebSocket message once the agent finishes.
-- `stream` — the agent's stream events are pushed as they're generated, each as its own
-  `STREAM_CHUNK` WebSocket message. Every chunk carries `event`; `delta` appears only on a
-  `text_delta`, so a client must test for the key rather than assume it. With `queue_mode = false`, the ingress service streams
+- `complete` (or `null`) — the full response is delivered in one `CHAT_RESPONSE` WebSocket
+  message once the agent finishes.
+- `delta` — the agent's stream events are pushed as they're generated, each as its own
+  `STREAM_CHUNK` WebSocket message, ending with a chunk carrying `done: true`. Every chunk
+  carries `event`; the `delta` key appears only on a `text_delta`, so a client must test for
+  the key rather than assume it. With `queue_mode = false`, the ingress service streams
   the agent inline and broadcasts each chunk directly over the connection. With
   `queue_mode = true`, `ECSStreamAgentRunner` fans out each chunk as its own Output Queue
   message and `ECSOutputConsumer` broadcasts every one as a `STREAM_CHUNK`.
@@ -453,7 +506,7 @@ Modes:
 - A DynamoDB `websocket-connections` table (hash `user_id`, range `connection_id`, GSI `connection_id-index`, TTL `expiry_time`)
 - IAM for the REST service task role: `execute-api:ManageConnections` + connections-table access
 
-**Not used in WebSocket modes:** the DynamoDB response store and `gateway_endpoints`
+**Not used in WebSocket mode:** the DynamoDB response store and `gateway_endpoints`
 (rejected by validation) — responses are pushed over the connection instead of stored.
 Authentication is handled in-app on `$connect` (bearer token with a `userId` claim);
 there is no API Gateway authorizer.
@@ -463,6 +516,7 @@ there is no API Gateway authorizer.
 ```hcl
 queue_mode     = true          # or false to run the agent inline in the ingress service
 execution_mode = "async"
+message_type   = "delta"       # one STREAM_CHUNK per chunk; omit for one CHAT_RESPONSE per reply
 
 # Optional route customization
 ws_chat_route = "conversation"
@@ -477,10 +531,36 @@ ws_routes = [
 (`routeKey`, `connectionId`, `eventType`, `domainName`, `stage`) are forwarded to
 the app as `x-ws-*` request headers.
 
-> **App contract**: WebSocket modes assume the container image supports the same
-> `AK_EXECUTION__MODE = async|stream` behavior as the serverless deployment, exposes
-> an HTTP ingress route for forwarded frames, reads the `x-ws-*` headers, and reads
-> `AK_WEBSOCKET_API__ENDPOINT_URL` for `PostToConnection`. Verify these before use.
+### Realtime Mode (`realtime`)
+
+Used for external persistent WebRTC/WebSocket integrations like the LiveKit Voice Gateway.
+Unlike `async`, this mode **does not create an AWS API Gateway WebSocket**.
+Instead, the ingress service acts as a background worker running an infinite loop to maintain
+a connection to the external realtime provider (e.g., LiveKit Cloud).
+
+It runs in either queue mode:
+
+- **`queue_mode = false`**: one container. The ingress service runs the app's
+  `IOHandler.run(gateways=[...])` on the `in_memory` transport, so the gateway, the agent runner
+  and the response handler share one process. No SQS queues or agent-runner service are created.
+- **`queue_mode = true`**: the ingress service hosts the gateway and the response handler, and the
+  agent-runner service holds the model sockets, with SQS between them.
+
+Either way, run a single replica of each service (`desired_count = 1`, and
+`scaling_config.enabled = false` in queue mode): the gateway owns its rooms and the runner's
+connection pool is local to its process.
+
+**Configuration:**
+
+```hcl
+queue_mode     = true   # or false for the single-container topology
+execution_mode = "realtime"
+```
+
+> **App contract**: WebSocket mode assumes the container image supports the same
+> `AK_EXECUTION__MODE = async` behavior (with either `AK_EXECUTION__MESSAGE_TYPE`) as the
+> serverless deployment, exposes an HTTP ingress route for forwarded frames, reads the `x-ws-*`
+> headers, and reads `AK_WEBSOCKET_API__ENDPOINT_URL` for `PostToConnection`. Verify these before use.
 
 ## Auto Scaling
 
@@ -569,7 +649,7 @@ scaling_config = {
 
 ## Examples
 
-See [examples/aws-containerized/](../../examples/aws-containerized/) for complete examples:
+See [examples/aws-containerized/](../../../examples/aws-containerized/) for complete examples:
 
 - **openai-dynamodb-scalable** - Production-ready OpenAI agent with auto-scaling
 - **openai-websocket** - OpenAI agent over a WebSocket API in direct (non-queue) mode: one ECS
@@ -578,12 +658,12 @@ See [examples/aws-containerized/](../../examples/aws-containerized/) for complet
 - **openai-websocket-scalable** - OpenAI agent over a WebSocket API in queue mode: the REST/IO
   service enqueues chat frames and pushes responses, while a separately-scalable Agent Runner
   service processes them from SQS
-- **openai-stream** - OpenAI agent over a WebSocket API in direct (non-queue), STREAM execution
-  mode: the reply is delivered token-by-token as `STREAM_CHUNK` messages instead of one final
-  `CHAT_RESPONSE`
-- **openai-stream-queue-mode** - OpenAI agent over a WebSocket API in queue-based STREAM execution
-  mode: the Agent Runner streams token-by-token chunks onto the Output Queue so it can scale
-  independently of ingress
+- **openai-stream** - OpenAI agent over a WebSocket API in direct (non-queue) mode with
+  `execution_mode = "async"` and `message_type = "delta"`: the reply is delivered token-by-token as
+  `STREAM_CHUNK` messages instead of one final `CHAT_RESPONSE`
+- **openai-stream-queue-mode** - OpenAI agent over a WebSocket API in queue mode with
+  `execution_mode = "async"` and `message_type = "delta"`: the Agent Runner streams
+  token-by-token chunks onto the Output Queue so it can scale independently of ingress
 
 ## Migration
 
@@ -617,10 +697,14 @@ output "output_queue_url"           # Output queue URL (queue mode)
 output "vpc_id"                     # VPC ID
 output "private_subnet_ids"         # Private subnet IDs
 
+output "alb_security_group_id"          # ALB security group ID (created or provided)
+output "ecs_service_security_group_id"  # ECS service security group ID (created or provided)
+output "agent_runner_security_group_id" # Agent Runner security group ID (queue mode only; created or provided)
+
 output "api_gateway_cloudwatch_log_group_arn"   # API Gateway log group ARN (null when logging disabled)
 output "api_gateway_cloudwatch_log_group_name"  # API Gateway log group name (null when logging disabled)
 
-# WebSocket mode only (`execution_mode = "async"` or `"stream"`) — null otherwise
+# WebSocket mode only (`execution_mode = "async"`) — null otherwise
 output "websocket_api_endpoint_url"       # WebSocket API Gateway connect URL (wss://...)
 output "websocket_api_id"                 # WebSocket API Gateway ID
 output "websocket_api_execution_arn"      # WebSocket API Gateway execution ARN
@@ -640,7 +724,7 @@ output "schedule_table_arn"            # DynamoDB schedule store table ARN
 ## Requirements
 
 - **Terraform**: >= 1.9.5
-- **AWS Provider**: >= 6.11.0
+- **AWS Provider**: 6.70.0 (pinned; 6.69.0 breaks zip-packaged Lambdas, fixed in 6.69.1 — [hashicorp/terraform-provider-aws#50474](https://github.com/hashicorp/terraform-provider-aws/issues/50474))
 - **Docker Provider**: 3.6.2
 
 ## Providers

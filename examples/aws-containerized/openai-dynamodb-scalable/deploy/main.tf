@@ -4,12 +4,10 @@
 module "containerized_agents" {
   # When using from registry:
   source  = "yaalalabs/ak-containerized/aws"
-  version = "0.9.1"
+  version = "0.9.5"
 
   providers            = { aws = aws, docker = docker }
-  product_alias        = var.product_alias
-  env_alias            = var.env_alias
-  module_name          = var.module_name
+  prefix               = var.prefix
   region               = var.region
   product_display_name = "OpenAI Agents - Scalable"
 
@@ -20,17 +18,16 @@ module "containerized_agents" {
   # ---- REST Service Configuration ----
   # In queue mode, this service handles HTTP requests and manages the queue interaction
   rest_service = {
-    package_path          = "../dist-rest-service"
-    cpu                   = 256
-    memory                = 512
-    desired_count         = 1
-    container_port        = 8000
-    health_check_endpoint = "/health"
+    alb_security_group_id         = var.alb_security_group_id
+    ecs_service_security_group_id = var.ecs_service_security_group_id
+    package_path                  = "../dist-rest-service"
+    cpu                           = 256
+    memory                        = 512
+    desired_count                 = 1
+    container_port                = 8000
+    health_check_endpoint         = "/health"
     # Override the Docker CMD to specify the correct entrypoint
     command = ["python", "app_rest_service.py"]
-    environment_variables = {
-      OPENAI_API_KEY = var.openai_api_key
-    }
   }
 
   # ---- Agent Memory (Session Store) ----
@@ -41,6 +38,11 @@ module "containerized_agents" {
   # Enable queue-based execution for scalable, async processing
   queue_mode     = true
   execution_mode = "rest_sync" # "rest_sync" | "rest_async"
+
+  # ---- Secret Resolution ----
+  # Grants ssm:GetParameter on /ak/<prefix>/* and injects AK_SECRET__PREFIX, so the agent runner
+  # resolves OPENAI_API_KEY from /ak/<prefix>/openai_api_key (config.yaml `secret:` block)
+  ssm_enabled = true
 
   # ---- Queue Configuration ----
   # SQS queues for request/response handling
@@ -71,16 +73,14 @@ module "containerized_agents" {
   # Separate ECS service that processes messages from the input queue
   # This runs the actual agent logic
   agent_runner = {
-    cpu           = 1024
-    memory        = 2048
-    desired_count = 1
+    security_group_id = var.agent_runner_security_group_id
+    cpu               = 1024
+    memory            = 2048
+    desired_count     = 1
     # Provide package_path to build a separate Docker image for agent runner
     package_path = "../dist-agent-runner"
     # Override the Docker CMD to specify the correct entrypoint
     command = ["python", "app_agent_runner.py"]
-    environment_variables = {
-      OPENAI_API_KEY = var.openai_api_key
-    }
   }
 
   # ---- Agent Runner Auto Scaling ----
@@ -103,7 +103,7 @@ module "containerized_agents" {
   }
 
   tags = {
-    Example     = "openai-dynamodb-scalable"
-    Environment = var.env_alias
+    Example    = "openai-dynamodb-scalable"
+    Deployment = var.prefix
   }
 }

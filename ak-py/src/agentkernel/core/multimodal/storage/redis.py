@@ -6,7 +6,6 @@ store, with TTL-based expiration and key-prefix isolation.
 """
 
 import json
-from typing import Optional
 
 from ...util.driver.redis import RedisDriver
 from .base import AttachmentStore
@@ -20,6 +19,9 @@ class RedisAttachmentStore(AttachmentStore):
     ``{prefix}{session_id}:{attachment_id}``. An additional list
     ``{prefix}{session_id}:_index`` tracks insertion order for pruning.
     """
+
+    # Redis is an external service, so any process with the same config reads what another wrote.
+    shared = True
 
     def __init__(self, session_id: str, url: str, ttl: int, prefix: str):
         """
@@ -55,7 +57,7 @@ class RedisAttachmentStore(AttachmentStore):
 
         return attachment_id
 
-    def get(self, attachment_id: str) -> Optional[dict]:
+    def get(self, attachment_id: str) -> dict | None:
         raw = self._driver.get(self._key(attachment_id))
         if raw:
             return json.loads(raw)

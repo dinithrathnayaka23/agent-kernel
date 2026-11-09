@@ -12,6 +12,11 @@ Agent Kernel provides powerful execution hooks that let you customize agent beha
 
 - **Langfuse** - Open-source LLM engineering platform for tracing, evaluating, and monitoring AI applications. See [Traceability and Observability](../advanced/traceability) for detailed setup and usage.
 - **OpenLLMetry (Traceloop)** - OpenTelemetry-based observability for LLM applications with support for multiple backends including Traceloop, Datadog, New Relic, and Honeycomb. See [Traceability and Observability](../advanced/traceability) for detailed setup and usage.
+- **AWS CloudWatch** - OpenTelemetry traces exported to AWS X-Ray and searchable in CloudWatch Transaction Search. See [Traceability and Observability](../advanced/traceability) for detailed setup and usage.
+
+## Realtime voice
+
+- **[LiveKit](./livekit)** - Connect OpenAI Agents SDK and Google ADK agents to LiveKit WebRTC rooms with `execution.mode: realtime`. A stateful `LiveKitEdgeGateway`, hosted by `GatewayRunner`, receives user audio and text and delivers the model's streamed voice and transcript back to the room.
 
 ## Social media
 These are built on REST APIs and you can install custom integrations as well.
@@ -46,9 +51,16 @@ flowchart LR
     style T fill:#1ebbd7,stroke:#fff,stroke-width:2px,color:#fff
 ```
 
-### Custom
-For REST API based 'custom integrations' you can implement **RESTRequestHandler** and pass it to the RESTAPI.run() method. The built-in integrations are also developed similarly.
+### How a messaging integration works
 
+Every messaging integration is an **adapter pair** with the execution queue between them, so the
+agent never runs inside the webhook turn: a slow model call can no longer exceed the platform's
+delivery timeout and make it redeliver the message.
+
+- The **inbound adapter** verifies the delivery, normalizes it (resolving the session and the
+  platform's own message id at the edge), stores any attachments, and enqueues.
+- The **agent runner** executes it, knowing nothing about the platform.
+- The **outbound adapter** delivers the reply through the platform's API.
 
 ```mermaid
 ---
@@ -57,23 +69,38 @@ config:
   elk: true
 ---
 flowchart LR
-    
-    D["RESTRequestHandler"] --> I["AgentSlackRequestHandler"] & J["AgentWhatsAppRequestHandler"] & K["AgentMessengerRequestHandler"] & M["AgentInstagramRequestHandler"] & O["AgentTelegramRequestHandler"] & P["AgentGmailRequestHandler"] & T["AgentTeamsRequestHandler"] & N["CustomHandler"]
+    P["Platform"] --> W["WebhookRESTRequestHandler<br/>(or PollerRunner for Gmail)"]
+    W --> IN["InboundAdapter<br/>verify → parse"]
+    IN --> Q(["Input queue"]) --> AR["AgentRunner"] --> OQ(["Output queue"])
+    OQ --> RH["ResponseHandler"] --> OUT["OutboundAdapter<br/>deliver"] --> P
 
-    style I fill:#005073,stroke:#fff,stroke-width:2px,color:#fff
-    style J fill:#1ebbd7,stroke:#fff,stroke-width:2px,color:#fff
-    style K fill:#b5667b,stroke:#fff,stroke-width:2px,color:#fff
-    style M fill:#484c7a,stroke:#fff,stroke-width:2px,color:#fff
-    style O fill:#3a9ecc,stroke:#fff,stroke-width:2px,color:#fff
-    style T fill:#0078D4,stroke:#fff,stroke-width:2px,color:#fff
-    style N fill:#bd7e4a,stroke:#fff,stroke-width:2px,color:#fff
+    style IN fill:#005073,stroke:#fff,stroke-width:2px,color:#fff
+    style OUT fill:#005073,stroke:#fff,stroke-width:2px,color:#fff
+    style AR fill:#1ebbd7,stroke:#fff,stroke-width:2px,color:#fff
 ```
+
+Mount an integration with `IOHandler.run(...)`, which starts the queue topology alongside the
+webhook routes. `RESTAPI.run([...])` builds a bare API with no runner behind it, so it rejects an
+integration handler rather than silently accepting messages nothing will answer.
+
+On AWS Lambda, wrap the same handler in a `LambdaWebhookHost` and register its `handle` with
+`Lambda.register` in the request-handler Lambda; the serverless agent runner and response handler carry the reply back to the platform. See
+[Messaging integrations on AWS Lambda](../deployment/aws-serverless.md#messaging-integrations) for the
+Terraform routes, the authorizer bypass and the REST-modes-only limit.
+
+Bring your own delivery for any platform by pointing its `outbound_adapter` setting at a dotted
+path to your own `OutboundAdapter` subclass; bring your own parsing by passing your own
+`InboundAdapter` subclass to the handler.
+
+### Custom
+For REST API based 'custom integrations' you can implement **RESTRequestHandler** and pass it to the `IOHandler.run(handlers=[...])` method alongside the messaging handlers.
 
 ```python
 from fastapi import APIRouter
 from agentkernel.api import RESTRequestHandler
-from agentkernel.api import RESTAPI
-from agentkernel.slack import AgentSlackRequestHandler
+from agentkernel.integration.adapter import WebhookRESTRequestHandler
+from agentkernel.pipeline import IOHandler
+from agentkernel.slack import SlackInboundAdapter
 
 class CustomHandler(RESTRequestHandler):
   def get_router(self) -> APIRouter:
@@ -99,5 +126,6 @@ class CustomHandler(RESTRequestHandler):
       # Do a vector search and return something
 
 if __name__ == "__main__":
-    RESTAPI.run([ AgentSlackRequestHandler(), CustomHandler()]) # Can pass multiple handlers
+    # Can pass multiple handlers
+    IOHandler.run(handlers=[WebhookRESTRequestHandler(SlackInboundAdapter()), CustomHandler()])
 ```

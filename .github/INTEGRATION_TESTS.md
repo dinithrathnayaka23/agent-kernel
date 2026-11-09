@@ -3,7 +3,7 @@
 ## Created Files
 
 ### 1. Configuration File
-**Location:** [`.github/integration-test-config.yaml`](.github/integration-test-config.yaml)
+**Location:** [`.github/integration-test-config.yaml`](integration-test-config.yaml)
 
 Defines which tests run in nightly vs weekly tiers and their execution order. This is the single source of truth for test configuration.
 
@@ -16,21 +16,21 @@ Defines which tests run in nightly vs weekly tiers and their execution order. Th
 ### 2. GitHub Actions Workflows
 
 #### Nightly Tests
-**Location:** [`.github/workflows/integration-test.yaml`](.github/workflows/integration-test.yaml)
+**Location:** [`.github/workflows/integration-test.yaml`](workflows/integration-test.yaml)
 
 - **Schedule:** Weekly, Sundays at 5:30 PM UTC (`30 17 * * 0`)
 - **Behavior:** Runs all tests, but for AWS projects only executes deploy and test (no resource destruction)
 - **Manual Trigger:** Available via GitHub Actions UI
 
 #### Weekly Tests
-**Location:** [`.github/workflows/integration-test-weekly.yaml`](.github/workflows/integration-test-weekly.yaml)
+**Location:** [`.github/workflows/integration-test-weekly.yaml`](workflows/integration-test-weekly.yaml)
 
 - **Schedule:** Every Sunday at 3 AM UTC (`0 3 * * 0`)
 - **Behavior:** Full lifecycle testing - destroys all AWS resources first, then deploys and tests each project
 - **Manual Trigger:** Available via GitHub Actions UI
 
 ### 3. Matrix Generator
-**Location:** [`.github/scripts/generate_test_matrix.py`](.github/scripts/generate_test_matrix.py)
+**Location:** [`.github/scripts/generate_test_matrix.py`](scripts/generate_test_matrix.py)
 
 Generates test matrices for GitHub Actions workflows from the configuration file.
 
@@ -50,13 +50,16 @@ python3 .github/scripts/generate_test_matrix.py --tier weekly --format github
 ```
 
 ### 4. Test Runner Script
-**Location:** [`.github/scripts/run_single_test.py`](.github/scripts/run_single_test.py)
+**Location:** [`.github/scripts/run_single_test.py`](scripts/run_single_test.py)
 
 Python script that runs a single test. Used by the parallel GitHub Actions jobs.
 
 **Features:**
 - Runs individual tests (api, memory, aws-containerized, aws-serverless)
-- Supports both `test` and `destroy` actions
+- Supports `deploy`, `test`, `destroy` and `seed-secrets` actions
+- `seed-secrets` writes `OPENAI_API_KEY` from the job env to SSM (`/ak/<prefix>/openai_api_key`, SecureString)
+  for examples whose `config.yaml` uses the `aws_ssm` secret provider; a no-op for every other example.
+  The CI role needs `ssm:PutParameter` on `arn:aws:ssm:<region>:<account>:parameter/ak/*`
 - Used by GitHub Actions matrix strategy for parallel execution
 - Detailed logging and error reporting
 
@@ -65,12 +68,15 @@ Python script that runs a single test. Used by the parallel GitHub Actions jobs.
 # Run a test
 python .github/scripts/run_single_test.py --type api --path examples/api/openai --action test
 
+# Seed SSM secrets for an aws_ssm example (run before deploy)
+python .github/scripts/run_single_test.py --type aws-serverless --path examples/aws-serverless/openai --action seed-secrets
+
 # Destroy AWS resources
 python .github/scripts/run_single_test.py --type aws-serverless --path examples/aws-serverless/openai --action destroy
 ```
 
 ### 5. Configuration Validator
-**Location:** [`.github/scripts/validate_integration_config.py`](.github/scripts/validate_integration_config.py)
+**Location:** [`.github/scripts/validate_integration_config.py`](scripts/validate_integration_config.py)
 
 Validates the configuration file for:
 - Valid YAML syntax
@@ -91,7 +97,7 @@ The workflows use OIDC to assume the IAM role for AWS access, which is more secu
 ## Maintenance
 
 ### Adding a New Test
-Edit [`.github/integration-test-config.yaml`](.github/integration-test-config.yaml):
+Edit [`.github/integration-test-config.yaml`](integration-test-config.yaml):
 ```yaml
 nightly:
   tests:
@@ -105,8 +111,8 @@ Simply reorder entries in the config file.
 
 ### Changing Schedule
 Edit the cron expressions in:
-- [`.github/workflows/integration-test.yaml`](.github/workflows/integration-test.yaml) (nightly)
-- [`.github/workflows/integration-test-weekly.yaml`](.github/workflows/integration-test-weekly.yaml) (weekly)
+- [`.github/workflows/integration-test.yaml`](workflows/integration-test.yaml) (nightly)
+- [`.github/workflows/integration-test-weekly.yaml`](workflows/integration-test-weekly.yaml) (weekly)
 
 ## Validation
 

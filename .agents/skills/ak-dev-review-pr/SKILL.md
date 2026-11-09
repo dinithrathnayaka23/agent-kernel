@@ -84,7 +84,7 @@ Then route from the PR's changed file paths to the specialized skills. Take the 
 | `trace/` — tracing providers or traced runners | `ak-dev-new-tracing-provider` |
 | `sandbox/`: sandbox providers, broker flavors, capabilities | `ak-dev-new-sandbox-provider` |
 | `pipeline/transport/`: queue transports, transport factory | `ak-dev-new-queue-transport` |
-| `docs/`, `README.md`, `ak-py/README.md`, deployment/example READMEs (repo root) | `ak-dev-sync-docs-from-branch` — use its docs-surface map to check the right surfaces were updated, including the React landing and features pages (`docs/src/pages/index.tsx`, `docs/src/pages/features.tsx`) when the change alters the inventory of frameworks, integrations, providers, transports, deployment targets, or headline capabilities |
+| `docs/`, `README.md`, `ak-py/README.md`, deployment/example READMEs (repo root) | `ak-dev-sync-docs-from-branch` — use its docs-surface map to check the right surfaces were updated, including the React landing and features pages (the landing page's inventories live in `docs/src/components/IntegrationsMarquee/data.tsx`, `ArchitectureOverview/data.tsx`, and `FeatureExplorer/data.tsx`; the features page's inventories live in `docs/src/pages/features.tsx`) when the change alters the inventory of frameworks, integrations, providers, transports, deployment targets, or headline capabilities |
 | `.agents/skills/` or `ak-py/src/agentkernel/skills/` (user skills) | `ak-dev-sync-skills-from-branch` — use its conventions to judge skill content and placement |
 
 A PR can match several rows — load every matching skill. If the PR touches one of these areas only incidentally (e.g. a mechanical rename brushing `trace/`), a skim of the skill's checklist is enough; when the PR *adds or substantially modifies* that kind of component, walk the guide's checklist step by step and flag every step the PR skipped (missing factory registration, missing config section, missing optional-dependency extra, missing exports, missing tests, missing example).
@@ -132,6 +132,16 @@ Evaluate the delta on each dimension. For each finding, record: file, line (in t
 - **Config-driven behavior**: new knobs go through `AKConfig` (Pydantic, YAML/env with `AK_` prefix), not module-level constants or ad-hoc `os.environ` reads.
 - **Session lifecycle correctness**: session state mutations happen inside the session context; transient per-request data uses `v_cache`, cross-request data uses `nv_cache`; no state stored on module globals.
 - **Plugin interfaces**: pluggable components are registered through the existing factories/builders, not special-cased with `if/else` chains in core.
+- **Config surface cohesion**: when a component already has a canonical settings surface (an
+  object-typed variable — Terraform's `rest_service`/`agent_runner`/`queue_config`/`scaling_config`; an
+  `AKConfig` Pydantic section; a settings dataclass; builder kwargs), new config for that component
+  belongs on it, not as a disconnected sibling variable/parameter/env var. This fragments one
+  component's config across two places — a defect even if the sibling wires through and
+  plans/type-checks fine. Check every layer the PR touches: a root module and the submodule it calls can
+  each have their own canonical object for the same service, and either can independently fragment (a
+  root fixing its `rest_service` object doesn't guarantee the submodule's identically-shaped object stays
+  cohesive too). A flat sibling is legitimate only when the PR/spec states a concrete reason it can't be
+  a nested field; otherwise it's a finding.
 - **Pluggable by default**: a new touchpoint with an external system, backend, or provider ships as an ABC plus adapters behind a factory in the `core/util/factory.py` shape (`if/elif` real imports for built-ins, `require_extra` on optional SDKs, `resolve_dotted` for bring-your-own). A single hard-wired implementation with no interface or BYO path, or core code branching on backend names, is a `[blocker]`-level architecture finding unless the spec or PR description justifies it.
 - **Config reuse, no excessive knobs**: every new `AKConfig` field is checked against the existing models. Flag a new block that duplicates an existing shape instead of reusing it (`_QueuesConfig`, `_ResponseStoreConfig`, the shared connection models, or a defaults-only subclass of one); an `enabled` flag or `type` selector added where already-configured components could enable or select the feature implicitly (the session backend providing the WebSocket connection store is the model); and any field with no reader in the PR. Every surviving field needs a real `description` and a default that keeps existing YAML and `AK_*` env vars valid.
 - **Classes, not scripts**: feature logic is in classes with one responsibility each (ABC, backends, `*Factory`, `*Manager`/`*Handler`/`*Runner`, Pydantic models) with state on instances. A chain of module-level functions passing state through arguments, a `main()`-style wiring function, or mutable module globals is a finding; small stateless shared utilities and the plain tool functions bound by tool builders are the accepted exceptions.
@@ -147,7 +157,7 @@ Evaluate the delta on each dimension. For each finding, record: file, line (in t
 
 - Type hints on all function signatures; Pydantic `BaseModel` for data models; `ABC`/`@abstractmethod` for interfaces.
 - Logging via `logging.getLogger("ak.<module>")` at appropriate levels — no `print`, no root logger.
-- Formatting consistent with `black`/`isort` config (line length 150 in `ak-py`, 120 in examples).
+- Formatting consistent with `black`/`isort` config (line length 150 in `ak-py`, 120 in examples), and annotations in the modern style from `ak-dev-code-quality` (`list[...]`, `X | None`, `collections.abc`), which `make lint-check` enforces with ruff.
 - No dead code, commented-out blocks, leftover debug output, or unrelated drive-by changes.
 - No secrets, tokens, or hardcoded credentials in code, tests, or example configs.
 
@@ -162,7 +172,7 @@ Evaluate the delta on each dimension. For each finding, record: file, line (in t
 - User-facing changes update the relevant docs surfaces (`README.md`, `ak-py/README.md`, `docs/docs/`, deployment/example READMEs).
 - New capabilities that warrant an example include or update one under `examples/`.
 - New config keys are documented where configuration is described.
-- When the change adds, removes, or renames a framework, messaging integration, provider, transport, deployment target, bundled skill, or headline capability, the React docs-site pages that enumerate them are updated too: `docs/src/pages/index.tsx` (What's New banner, frameworks strip, agent skills, deployment clouds, sandbox provider cards) and `docs/src/pages/features.tsx` (feature page map, core capability cards, framework integrations, testing modes, messaging platforms, protocols), plus the What's New tip in `docs/docs/intro.md`. Missing updates here are summary-body findings; use the surface map in `ak-dev-sync-docs-from-branch`.
+- When the change adds, removes, or renames a framework, messaging integration, provider, transport, deployment target, or headline capability, the React docs-site pages that enumerate them are updated too: `docs/src/pages/index.tsx` (What's New banner, deployment clouds) plus its `docs/src/components/IntegrationsMarquee/data.tsx`, `ArchitectureOverview/data.tsx`, and `FeatureExplorer/data.tsx` (marquee tiles, architecture chips, feature cards), and `docs/src/pages/features.tsx` (feature page map, core capability cards, framework integrations, testing modes, messaging platforms, protocols), plus the What's New tip in `docs/docs/intro.md`. A bundled user skill change needs no landing page edit — only `docs/docs/agent-skills.md`. Missing updates here are summary-body findings; use the surface map in `ak-dev-sync-docs-from-branch`.
 
 ### 6. Spec conformance (when the PR contains implementation code covered by spec documents)
 
@@ -244,7 +254,7 @@ After posting, report back to the requester:
 - Anchoring an inline comment to a line that is not part of the diff — the API rejects it; put un-anchorable findings in the summary body.
 - Approving or requesting changes — this skill only ever comments.
 - Restating feedback that is already on the PR.
-- Flagging formatting that `black`/`isort` would fix anyway as individual nits — one summary-level note ("run `make lint`") is enough.
+- Flagging formatting or old-style annotations that `black`/`isort`/`ruff` would catch anyway as individual nits — one summary-level note ("run `make lint`") is enough.
 - Writing comments as dense paragraphs — point-form bullets are far easier for the author to scan and act on.
 - Reviewing from memory of the conventions instead of loading the `ak-dev-*` skills.
 - Loading only the three always-on skills and skipping the path-to-skill routing in Step 2 — component PRs then get reviewed without the checklist that defines what "complete" means for that component.
@@ -255,4 +265,4 @@ After posting, report back to the requester:
 - Accepting a hard-wired single implementation because "only one backend exists today": the house pattern is an interface plus factory from the first PR.
 - Accepting a new config block, `enabled` flag, or `type` selector without asking whether an existing `AKConfig` model already expresses it or whether already-configured components should enable the feature implicitly.
 - Letting procedural module-level functions through because they work: the maintainability rule is classes with one responsibility each.
-- Checking `docs/docs/` pages but skipping the React landing and features pages (`docs/src/pages/index.tsx`, `docs/src/pages/features.tsx`) when the change alters an inventory those pages display.
+- Checking `docs/docs/` pages but skipping the React landing and features pages (the landing page's hard-coded inventories in `docs/src/components/IntegrationsMarquee/data.tsx`, `ArchitectureOverview/data.tsx`, and `FeatureExplorer/data.tsx`; `docs/src/pages/features.tsx`) when the change alters an inventory those pages display.

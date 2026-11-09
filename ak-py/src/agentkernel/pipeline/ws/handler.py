@@ -19,7 +19,8 @@ import logging
 import re
 import threading
 import uuid
-from typing import Any, Callable, ClassVar, Dict, Optional
+from collections.abc import Callable
+from typing import Any, ClassVar
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -45,14 +46,14 @@ class PipelineWebSocketHandler(RESTRequestHandler):
     # Route key selecting the chat dispatch when websocket_api.chat_route is not configured.
     DEFAULT_CHAT_ROUTE = "chat"
 
-    _custom_routes: ClassVar[Dict[str, Callable]] = {}
+    _custom_routes: ClassVar[dict[str, Callable]] = {}
 
     def __init__(
         self,
         auth_validator: AuthValidator,
-        registry: Optional[LocalConnectionRegistry] = None,
-        transport: Optional[QueueTransport] = None,
-        connection_store: Optional[WSConnectionStore] = None,
+        registry: LocalConnectionRegistry | None = None,
+        transport: QueueTransport | None = None,
+        connection_store: WSConnectionStore | None = None,
     ):
         """:param auth_validator: authenticates the handshake; mandatory, and its claims must
         include a ``userId`` (keys the connection). ``None`` raises ValueError."""
@@ -172,7 +173,7 @@ class PipelineWebSocketHandler(RESTRequestHandler):
             # The mapping's TTL reaps it if the store is briefly unreachable at disconnect.
             self._log.exception(f"Failed to deregister connection mapping: connection_id={connection_id}")
 
-    async def _authenticate(self, websocket: WebSocket) -> Optional[str]:
+    async def _authenticate(self, websocket: WebSocket) -> str | None:
         """Validate the ``token`` query parameter; a failure closes the socket (policy violation)."""
         token = websocket.query_params.get("token")
         if not token:
@@ -220,6 +221,9 @@ class PipelineWebSocketHandler(RESTRequestHandler):
             return
         if not body.session_id:
             await self._send_system(websocket, "session_id is required")
+            return
+        if not body.prompt and body.resume is None:
+            await self._send_system(websocket, "prompt is required unless the request carries a resume block")
             return
 
         request_id = request.request_id or str(uuid.uuid4())

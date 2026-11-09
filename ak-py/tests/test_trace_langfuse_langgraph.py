@@ -28,6 +28,8 @@ def _mock_agent(result):
     agent = MagicMock()
     agent._system_prompt = ""
     agent.agent = MagicMock()
+    agent.run_options = {}
+    agent.resolve_run_options = AsyncMock(side_effect=lambda session, requests: dict(agent.run_options))
     agent.agent.ainvoke = AsyncMock(return_value=result)
     return agent
 
@@ -91,3 +93,85 @@ class TestLangFuseLangGraphFrameworkContext:
 
         assert reply.response.startswith("Error")
         assert session.get(FRAMEWORK_CONTEXT) == {"user_id": "42"}
+
+
+class TestLangFuseLangGraphRunOptions:
+    """Run options declared on the agent flow through the traced runner, and its callback handler is kept."""
+
+    @pytest.mark.asyncio
+    async def test_caller_callbacks_are_appended_after_the_langfuse_handler(self):
+        runner = LangFuseLangGraph(client=MagicMock())
+        mine = object()
+        agent = _mock_agent({"messages": [_message("hello")]})
+        agent.run_options = {"config": {"callbacks": [mine]}, "interrupt_before": ["tools"]}
+
+        with patch("agentkernel.trace.langfuse.langgraph.propagate_attributes", _noop_cm):
+            await runner.run(agent, Session("s"), [AgentRequestText(prompt="hi")])
+
+        kwargs = agent.agent.ainvoke.call_args.kwargs
+        assert kwargs["config"]["callbacks"] == [runner._callback_handler, mine]
+        assert kwargs["config"]["configurable"] == {"thread_id": "s"}
+        assert kwargs["interrupt_before"] == ["tools"]
+
+    @pytest.mark.asyncio
+    async def test_a_resolved_config_reaches_ainvoke_through_the_traced_runner(self):
+        runner = LangFuseLangGraph(client=MagicMock())
+        mine = object()
+        agent = _mock_agent({"messages": [_message("hello")]})
+        agent.run_options = {"config": {"recursion_limit": 7}}
+        agent.resolve_run_options = AsyncMock(return_value={"config": {"callbacks": [mine], "recursion_limit": 9}})  # the factory-merged mapping
+
+        with patch("agentkernel.trace.langfuse.langgraph.propagate_attributes", _noop_cm):
+            await runner.run(agent, Session("s"), [AgentRequestText(prompt="hi")])
+
+        agent.resolve_run_options.assert_awaited_once()
+        kwargs = agent.agent.ainvoke.call_args.kwargs
+        assert kwargs["config"]["callbacks"] == [runner._callback_handler, mine]
+        assert kwargs["config"]["recursion_limit"] == 9
+
+
+class TestAResumedRunIsTracedToo:
+    """
+    The handler used to attach only where messages were built, so a resume ran untraced.
+
+    That is the worst half to lose: everything before the pause is the model deciding to ask, and
+    everything after it is the gated tool actually running.
+    """
+
+    def test_the_resume_config_carries_the_callback_handler(self):
+        from agentkernel.core.base import Session as AKSession
+
+        runner = LangFuseLangGraph(client=MagicMock())
+        agent = MagicMock()
+        agent.agent = MagicMock()
+
+        config = runner._resume_config(agent, AKSession("s"))
+
+        assert config["callbacks"] == [runner._callback_handler]
+
+    def test_an_ordinary_turn_still_carries_it(self):
+        """The seam moved; the behaviour it already had must not have."""
+        from agentkernel.core.base import Session as AKSession
+
+        runner = LangFuseLangGraph(client=MagicMock())
+        agent = MagicMock()
+        agent.agent = MagicMock()
+        agent._system_prompt = ""
+
+        config, _ = runner._prepare_session_and_messages(agent, AKSession("s"), "hi")
+
+        assert config["callbacks"] == [runner._callback_handler]
+
+    def test_both_paths_address_the_same_thread(self):
+        from agentkernel.core.base import Session as AKSession
+
+        runner = LangFuseLangGraph(client=MagicMock())
+        agent = MagicMock()
+        agent.agent = MagicMock()
+        agent._system_prompt = ""
+        session = AKSession("s-1")
+
+        resumed = runner._resume_config(agent, session)
+        ordinary, _ = runner._prepare_session_and_messages(agent, session, "hi")
+
+        assert resumed["configurable"]["thread_id"] == ordinary["configurable"]["thread_id"] == "s-1"

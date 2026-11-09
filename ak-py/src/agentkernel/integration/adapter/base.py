@@ -1,0 +1,333 @@
+"""The messaging-integration adapter seam (spec #524 §1).
+
+A platform integration is two pure translation functions with a queue between them:
+
+- :class:`InboundAdapter` turns one platform delivery into normalized
+  :class:`InboundRequest` envelopes. It verifies, parses, downloads and stores attachments —
+  and never runs the agent.
+- :class:`OutboundAdapter` turns an agent reply back into platform API calls, using only the
+  flat ``reply_context`` the inbound side resolved.
+
+Between them sits the pipeline's input queue, so a slow agent run can no longer hold a webhook
+turn open past the platform's delivery timeout.
+"""
+
+import base64
+import uuid
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import TYPE_CHECKING, Any
+
+from pydantic import BaseModel, Field
+
+from ...core.model import AgentReply, AgentRequestUnion, AgentRequestVoice, StreamChunk
+
+if TYPE_CHECKING:  # typing only; producer.py imports this module
+    from .producer import IntegrationProducer
+
+ATTACHMENTS_DISABLED_ERROR = (
+    "Attachments from messaging integrations require multimodal support — " "set multimodal.enabled: true in config.yaml to accept images and files"
+)
+# in_memory is deliberately not offered here: it is process-local too, and on every transport but
+# in_memory the runner that resolves the attachment is a different process. The mount-time check in
+# IntegrationProducer refuses that pairing; this message only has to name the stores that work
+# everywhere.
+SESSION_CACHE_ERROR = (
+    "multimodal.storage_type 'session_cache' is not supported for messaging integrations — "
+    "it writes into a session copy the agent's process never sees; use redis or dynamodb "
+    "(or in_memory only on the single-process in_memory transport)"
+)
+
+
+class Source(StrEnum):
+    """How an adapter that feeds the input queue is hosted."""
+
+    WEBHOOK = "webhook"
+    POLLER = "poller"
+    REALTIME = "realtime"
+
+
+class InboundRequest(BaseModel):
+    """One normalized platform message, fully resolved at the edge.
+
+    ``session_id`` and ``request_id`` are resolved here rather than downstream because only the
+    adapter knows the platform's own identifiers: the session key is the platform's conversation
+    key, and the request id is the platform's message id, which is what makes a webhook retry
+    deduplicate instead of running the agent twice.
+    """
+
+    session_id: str
+    request_id: str
+    requests: list[AgentRequestUnion]
+    prompt: str = ""
+    agent: str | None = None
+    user_id: str | None = None
+    group_id: str | None = None
+    reply_context: dict[str, str] = Field(default_factory=dict)
+
+
+@dataclass
+class InboundParseResult:
+    """What one platform delivery parsed into.
+
+    ``requests`` is a list because a single delivery can carry several messages: the Meta
+    platforms iterate ``entry`` x ``messaging``/``messages``. An empty list means the delivery
+    is legitimately ignored — a bot's own message, a non-message activity, an echo, a delivery
+    receipt — so "ignore" never has to be an exception.
+
+    ``response`` carries the platform-expected HTTP response when the platform SDK produced one
+    itself (Bolt's ``handle``, which also answers Slack's ``url_verification`` handshake, and
+    the Bot Framework adapter's invoke response). ``None`` means the host answers with the
+    adapter's :meth:`InboundAdapter.success_response`.
+    """
+
+    requests: list[InboundRequest] = field(default_factory=list)
+    response: Any = None
+
+
+class InboundAdapter(ABC):
+    """Platform -> Agent Kernel. Verifies and normalizes; never executes.
+
+    An implementation must not import or call ChatService, AgentService or Runtime. Its only
+    side effects are platform API calls (attachment downloads) and attachment storage.
+    """
+
+    name: str = ""
+    source: Source = Source.WEBHOOK
+    webhook_path: str = ""
+    challenge_path: str | None = None
+
+    async def verify(self, raw: Any) -> None:
+        """Reject a delivery that did not come from the platform.
+
+        Concrete and a no-op by default: Slack and Teams verify inside their SDK's own dispatch
+        (so their check happens during :meth:`parse`), and a poller has nothing to verify.
+        Implementations that do override it raise the platform's expected ``HTTPException``, and
+        it always runs before parsing and before anything is enqueued.
+
+        :param raw: The delivery as the host received it.
+        """
+
+    @abstractmethod
+    async def parse(self, raw: Any) -> InboundParseResult:
+        """Normalize one platform delivery into queue-ready requests.
+
+        :param raw: The delivery as the host received it — a FastAPI ``Request`` for a webhook
+            adapter, whatever :meth:`PollingInboundAdapter.poll` yielded for a poller.
+        :return: The parsed requests (possibly none) and any SDK-produced HTTP response.
+        """
+
+    async def challenge(self, raw: Any) -> Any:
+        """Answer the platform's subscription handshake.
+
+        :param raw: The incoming request.
+        :return: The platform's expected handshake response.
+        :raises HTTPException: 404 by default — most platforms have no handshake.
+        """
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=404, detail=f"{self.name} has no webhook challenge endpoint")
+
+    def success_response(self) -> Any:
+        """The success body returned when the platform SDK did not produce a response itself."""
+        return {"status": "ok"}
+
+    def missing_verification_settings(self) -> list[str]:
+        """Settings without which this adapter accepts deliveries it cannot authenticate.
+
+        LambdaWebhookHost refuses to serve an adapter that returns any, because behind the API Gateway
+        authorizer's integration bypass the adapter's own check is the only one. Empty by default,
+        so bring-your-own adapters stay servable.
+
+        :return: The unset settings, named as the user sets them (e.g. "whatsapp.app_secret").
+        """
+        return []
+
+
+class PollingInboundAdapter(InboundAdapter):
+    """An inbound adapter whose events are pulled rather than pushed.
+
+    Hosted by ``PollerRunner`` in its own process, so poller lifetime is never coupled to the
+    replica count of the webhook tier.
+    """
+
+    source = Source.POLLER
+    poll_interval: float = 30.0
+
+    @abstractmethod
+    async def poll(self) -> list[Any]:
+        """Return the raw events to parse this iteration. Must not run the agent.
+
+        :return: Raw platform events, each of which is passed to :meth:`parse`.
+        """
+
+    def mark_handled(self, raw: Any) -> None:
+        """Record that a raw event has been enqueued, so the next poll skips it.
+
+        Default no-op: a platform whose poll query stops returning an event once it has been
+        acted on needs nothing here.
+
+        :param raw: The event that was just enqueued.
+        """
+
+
+class OutboundAdapter(ABC):
+    """Agent Kernel -> platform. Delivers a reply using only the reply context.
+
+    Instances are cached by the factory and shared across the Response Handler's consumer
+    threads, so an implementation must keep no per-message state on ``self``. Each call is
+    driven on its own event loop, so a client bound to a loop (an ``httpx.AsyncClient`` held on
+    ``self``) would break on the second delivery: construct such clients per call.
+    """
+
+    name: str = ""
+    MESSAGE_LIMIT: int = 4096
+    MAX_CHUNKS: int | None = None
+    TRUNCATION_NOTICE: str = "The response was truncated because it exceeds this platform's size limit."
+    ERROR_MESSAGE: str = "Sorry, there was an error processing your request."
+
+    @abstractmethod
+    async def deliver(self, reply: AgentReply, reply_context: dict[str, str]) -> None:
+        """Send the agent reply to the platform.
+
+        The reply always arrives as an ``AgentReplyText``: the Agent Runner serializes the typed
+        reply to its string form before the output queue, which is the same collapse every
+        integration performed inline before this seam existed.
+
+        Raising hands the message back to the consumer loop, which retries it up to
+        ``execution.queues.output.max_receive_count`` and then calls :meth:`deliver_error`.
+
+        :param reply: The agent's reply.
+        :param reply_context: The delivery coordinates resolved at the edge.
+        """
+
+    async def deliver_chunk(self, chunk: StreamChunk, reply_context: dict[str, str]) -> None:
+        """Send a real-time streaming chunk to the platform.
+
+        A realtime run emits the same typed chunks as text streaming: audio as an ``AudioDelta``
+        event, transcript as ``TextDelta``, barge-in as ``Interrupt``, and a final ``done``
+        chunk. ``AgentChanged`` names the agent speaking from that point on, once when the
+        conversation starts and again on every handoff; an edge that shows agents separately
+        switches speaker on it, and one with a single voice line can ignore it. Platforms that
+        support streaming (e.g., LiveKit for voice) override this to play chunks in real-time; the
+        default is a no-op.
+
+        :param chunk: The streamed chunk, carrying a ``StreamEvent`` (or ``done``).
+        :param reply_context: The delivery coordinates resolved at the edge.
+        """
+        pass
+
+    @abstractmethod
+    async def deliver_error(self, message: str, reply_context: dict[str, str]) -> None:
+        """Send a user-facing failure message, so a user is never left silent.
+
+        :param message: The message to show; normally :attr:`ERROR_MESSAGE`.
+        :param reply_context: The delivery coordinates resolved at the edge.
+        """
+
+    async def acknowledge(self, reply_context: dict[str, str]) -> dict[str, str]:
+        """Acknowledge receipt at the edge, before the agent runs.
+
+        This is the "thinking" message, the typing indicator, the read receipt — the feedback a
+        user expects immediately, which is why it stays at the edge rather than moving to the
+        Response Handler.
+
+        :param reply_context: The delivery coordinates resolved so far.
+        :return: Extra reply-context entries to merge in (e.g. the id of the acknowledgement
+            message, so delivery can edit it). Empty by default.
+        """
+        return {}
+
+    def split_reply(self, text: str) -> list:
+        """Chunk a reply into pieces the platform will accept.
+
+        :param text: The full reply text.
+        :return: The chunks to send, in order.
+        """
+        chunks = [text[i : i + self.MESSAGE_LIMIT] for i in range(0, len(text), self.MESSAGE_LIMIT)] or [""]
+        if self.MAX_CHUNKS is not None and len(chunks) > self.MAX_CHUNKS:
+            chunks = chunks[: self.MAX_CHUNKS] + [self.TRUNCATION_NOTICE]
+        return chunks
+
+
+class StatefulEdgeAdapter(ABC):
+    """A stateful, bidirectional edge that owns a long-lived platform connection.
+
+    Unlike the stateless InboundAdapter/OutboundAdapter pair (designed for one-shot webhook
+    deliveries), a StatefulEdgeAdapter owns a persistent connection to a platform — a LiveKit
+    WebRTC room, a Twilio voice call, a WhatsApp call session — because only it can read the
+    live input *and* play the live output.
+
+    Hosted by GatewayRunner, which registers it so the ResponseHandler can route replies back
+    to the same live connection.
+    """
+
+    name: str = ""
+    source: Source = Source.REALTIME
+    ERROR_MESSAGE: str = "Sorry, there was an error processing your request."
+    session_id: str = ""
+    # Agent this edge's session is bound to; None selects the runner's default agent. A realtime
+    # session binds its agent once, when its connection is created from the first request.
+    agent: str | None = None
+
+    def __init__(self):
+        self._producer: "IntegrationProducer | None" = None
+
+    # ── Lifecycle ──
+
+    @abstractmethod
+    async def start(self) -> None:
+        """Connect and run the edge's loop until the process shuts down."""
+
+    @abstractmethod
+    async def stop(self) -> None:
+        """Gracefully disconnect and release resources.
+
+        Called by GatewayRunner when the process is shutting down.
+        Must cause start() to return cleanly.
+        """
+
+    # ── Inbound: Platform -> Agent Kernel ──
+
+    def _init_producer(self) -> None:
+        """Call once in start() to set up the input queue producer."""
+        # Imported here: producer.py imports InboundRequest from this module.
+        from .producer import IntegrationProducer
+
+        self._producer = IntegrationProducer()
+
+    def _enqueue(self, request: AgentRequestUnion) -> InboundRequest:
+        """Build the normalized inbound request for one platform message.
+
+        The caller hands it to :meth:`IntegrationProducer.enqueue`, which stamps the integration
+        and reply-context attributes, so every integration shares one producer.
+
+        :return: The request, carrying this edge's session and (if set) its configured agent.
+        """
+        return InboundRequest(
+            session_id=self.session_id,
+            request_id=str(uuid.uuid4()),
+            requests=[request],
+            agent=self.agent,
+            reply_context={"session_id": self.session_id},
+        )
+
+    def _enqueue_audio(self, raw_bytes: bytes) -> AgentRequestVoice:
+        """Base64-encode a PCM frame/batch into a voice request."""
+        b64_audio = base64.b64encode(raw_bytes).decode("utf-8")
+        return AgentRequestVoice(prompt="", audio_data=b64_audio, name="mic")
+
+    # ── Outbound: Agent Kernel -> Platform ──
+
+    @abstractmethod
+    async def deliver_chunk(self, chunk: StreamChunk, reply_context: dict[str, str]) -> None:
+        """Play one streamed chunk (audio, transcript, interrupt) back to the platform."""
+
+    @abstractmethod
+    async def deliver(self, reply: AgentReply, reply_context: dict[str, str]) -> None:
+        """Deliver a completed reply (non-streamed fallback)."""
+
+    @abstractmethod
+    async def deliver_error(self, message: str, reply_context: dict[str, str]) -> None:
+        """Surface a failure so the user is never left silent."""

@@ -3,10 +3,10 @@ set -e
 
 push_to_ecr() {
 	AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-	AWS_REGION="ap-southeast-2"
 	local image_name="$1"
 	local dockerfile="$2"
 	local ecr_uri="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${image_name}:latest"
+
 
 	aws ecr get-login-password --region "$AWS_REGION" |
 		docker login --username AWS --password-stdin \
@@ -43,12 +43,10 @@ function read_tfvar() {
 }
 
 function wait_for_ecs_stable() {
-	local region product_alias env_alias module_name cluster services
+	local region prefix cluster services
 	region=$(read_tfvar region)
-	product_alias=$(read_tfvar product_alias)
-	env_alias=$(read_tfvar env_alias)
-	module_name=$(read_tfvar module_name)
-	cluster="${product_alias}-${env_alias}-${module_name}"
+	prefix=$(read_tfvar prefix)
+	cluster="${prefix}"
 
 	echo "Resolving ECS services in cluster '${cluster}' (region ${region})..."
 	services=$(aws ecs list-services --cluster "$cluster" --region "$region" \
@@ -68,6 +66,8 @@ function wait_for_ecs_stable() {
 
 create_deployment_package $1
 
+# Read before pushd: read_tfvar resolves terraform.tfvars relative to the deploy dir.
+AWS_REGION=$(read_tfvar region)
 pushd ../dist || exit 1
 push_to_ecr "openai-dynamodb-ext" "Dockerfile"
 popd || exit 1

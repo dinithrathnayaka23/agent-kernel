@@ -9,7 +9,7 @@ Integrate Hugging Face Smolagents with Agent Kernel.
 ## Installation
 
 ```bash
-pip install agentkernel[smolagents]
+uv add "agentkernel[smolagents]"
 ```
 
 ## Basic Usage
@@ -126,6 +126,32 @@ Smolagents **round-trips a filtered subset** of the reserved [`framework_context
 `additional_args` is not a private state slot. Smolagents merges it into `agent.state` **and** appends it to the task text, so the whole context dict is stringified into the prompt on every turn — that is how the model learns which variables it can reference. Two implications: the prompt (and its token cost) grows with your context, and **anything you put in `framework_context` is shown to the model**. Keep credentials, tokens and PII out of it on smolagents; use a non-round-tripped session key for those instead.
 :::
 
+## Native run options
+
+`agent.run`'s own arguments (`max_steps`, `images`) are declared per agent with
+[`Module.run_options`](../core-concepts/runner.md#native-run-options); Agent Kernel merges them into
+the call and writes the keys it owns (`reset`, `additional_args`) last:
+
+```python
+SmolagentsModule([agent]).run_options(agent, max_steps=6)
+```
+
+Progress hooks need nothing from Agent Kernel here: smolagents takes `step_callbacks` on the agent
+constructor, which you already own. `agent.run` is called through `asyncio.to_thread`, which carries
+the context variables, so `Session.current()` resolves inside a step callback.
+
+Reserved (raise `ValueError` at declaration): `task`, `reset`, `additional_args`, `stream` and
+`return_full_result` (the last two change the return type the adapter maps).
+
+## Human in the loop
+
+This adapter **cannot pause**, and reports it rather than pretending: its runner leaves
+`supports_pause` at `False`, and `resume()` raises if called directly. A request that tries to resume
+a run on this framework is refused by `Runtime` with a message naming the runner.
+
+The framework's own human-in-the-loop facility does not intersect what Agent Kernel wraps — see
+[Human in the Loop](../advanced/human-in-the-loop.md) for the five adapters that do pause.
+
 ## Features
 
 - ✅ ToolCalling and CodeAgent support
@@ -137,3 +163,5 @@ Smolagents **round-trips a filtered subset** of the reserved [`framework_context
 ## Example
 
 See [examples/cli/smolagents](https://github.com/yaalalabs/agent-kernel/tree/develop/examples/cli/smolagents) for complete examples.
+
+For per-agent native run options, see [examples/cli/smolagents-run-options](https://github.com/yaalalabs/agent-kernel/tree/develop/examples/cli/smolagents-run-options) (`max_steps`, with progress via the native `step_callbacks` constructor argument and a deterministic `Run stats:` line on every reply).

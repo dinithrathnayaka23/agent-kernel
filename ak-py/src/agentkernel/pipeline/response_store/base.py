@@ -1,7 +1,7 @@
 import logging
 import time
 from abc import ABC, abstractmethod
-from typing import Dict, Iterator, List, Optional
+from collections.abc import Iterator
 
 from ...core.config import AKConfig
 
@@ -14,7 +14,7 @@ class ResponseStore(ABC):
     _log = logging.getLogger("ak.pipeline.response_store")
 
     @abstractmethod
-    def add_message(self, message: Dict) -> None:
+    def add_message(self, message: dict) -> None:
         """
         Store a response message.
 
@@ -24,7 +24,7 @@ class ResponseStore(ABC):
         pass
 
     @abstractmethod
-    def get_message(self, request_id: str, get_and_delete: bool = False) -> Dict | None:
+    def get_message(self, request_id: str, get_and_delete: bool = False) -> dict | None:
         """
         Retrieve a specific message's body by its request ID.
 
@@ -35,7 +35,7 @@ class ResponseStore(ABC):
         pass
 
     @abstractmethod
-    def get_record(self, request_id: str, get_and_delete: bool = False) -> Dict | None:
+    def get_record(self, request_id: str, get_and_delete: bool = False) -> dict | None:
         """
         Retrieve the full stored record by its request ID.
 
@@ -49,22 +49,52 @@ class ResponseStore(ABC):
         """
         pass
 
+    @property
+    def shared(self) -> bool:
+        """Whether a process other than the writer can read what this store holds.
+
+        Distinct from ``supports_chunk_streaming``: that says the store *can* carry a stream,
+        this says a second process can *read* it. A topology that runs the agent in another
+        process needs both, and the in-memory store answers True to the first while failing
+        this one. Defaults True because every backend but that one is an external service;
+        a bring-your-own store overrides it when its state lives in the writing process.
+        """
+        return True
+
     # -- optional chunk-streaming capability (local SSE delivery) ---------------------------
 
     def supports_chunk_streaming(self) -> bool:
         """Whether this store can buffer and stream per-request chunks (the local SSE path).
 
         The pipeline checks this capability instead of concrete store types, so a
-        bring-your-own store can take part in STREAM delivery by implementing
+        bring-your-own store can take part in SSE (rest_sync + delta) delivery by implementing
         ``add_chunk``/``stream``/``close_stream`` and returning True here.
         """
         return False
 
-    def add_chunk(self, request_id: str, chunk: Dict) -> None:
+    @staticmethod
+    def _chunk_timeout(chunk_timeout: float | None = None) -> float:
+        """Resolve how long ``stream`` waits for each next chunk.
+
+        Shared by every chunk-streaming store so the budget cannot drift between them. An
+        explicit value wins; otherwise the response store's own ``retry_count * delay`` is
+        reused rather than introducing a second knob for the same wait.
+
+        :param chunk_timeout: Caller-supplied budget, or None to derive one.
+        :return: Seconds to wait for each chunk.
+        """
+        if chunk_timeout is not None:
+            return chunk_timeout
+        response_store_config = AKConfig.get().execution.response_store
+        if response_store_config is not None:
+            return response_store_config.retry_count * response_store_config.delay
+        return 60.0  # matches the request handler's default local wait budget (60 x 1s)
+
+    def add_chunk(self, request_id: str, chunk: dict) -> None:
         """Append one streaming chunk for a request. Chunk-streaming stores only."""
         raise NotImplementedError(f"{type(self).__name__} does not support chunk streaming")
 
-    def stream(self, request_id: str, chunk_timeout: Optional[float] = None) -> Iterator[Dict]:
+    def stream(self, request_id: str, chunk_timeout: float | None = None) -> Iterator[dict]:
         """Yield a request's chunks in order until its done chunk. Chunk-streaming stores only."""
         raise NotImplementedError(f"{type(self).__name__} does not support chunk streaming")
 
@@ -84,11 +114,11 @@ class ResponseStore(ABC):
         """
         return False
 
-    def scan_records(self, prefix: str) -> List[Dict]:
+    def scan_records(self, prefix: str) -> list[dict]:
         """Return every stored record whose request_id starts with ``prefix``. Scan-capable stores only."""
         raise NotImplementedError(f"{type(self).__name__} does not support key scans")
 
-    def get_record_with_retry(self, request_id: str, get_and_delete: bool = False) -> Dict | None:
+    def get_record_with_retry(self, request_id: str, get_and_delete: bool = False) -> dict | None:
         """
         Wait until a record exists for a request ID and retrieve the whole record.
 

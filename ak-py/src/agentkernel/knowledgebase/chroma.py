@@ -1,11 +1,13 @@
 import hashlib
 import logging
-from typing import Any, Iterable, List, Mapping, Optional
+from collections.abc import Iterable, Mapping
+from typing import Any
 
 import chromadb
 from chromadb.utils import embedding_functions
 
 from .base import KnowledgeBase
+from .model import KnowledgeCapabilities
 
 log = logging.getLogger("ak.ChromaManager")
 
@@ -22,7 +24,7 @@ class ChromaManager(KnowledgeBase):
         name: str = "",
         collection_name: str = "knowledge_base",
         description: str = "chroma vector database",
-        embedding_function: Optional[Any] = None,
+        embedding_function: Any | None = None,
     ):  # pass in a description
         """
         Initialize a ChromaDB-backed knowledge manager.
@@ -35,7 +37,10 @@ class ChromaManager(KnowledgeBase):
             If omitted, the default Chroma embedding function is used.
         :return: None.
         """
-        super().__init__()
+        super().__init__(
+            capabilities=KnowledgeCapabilities(kinds=["vector"], search=True, search_mode="semantic", writable=True),
+            name=name,
+        )
         self.persist_path = persist_path
         self.client = None
         self.collection = None
@@ -99,7 +104,7 @@ class ChromaManager(KnowledgeBase):
         if texts:
             self.collection.upsert(documents=texts, metadatas=metadatas, ids=ids)
 
-    def read(self, query: str, limit: int = 3, **kwargs) -> List[Mapping[str, Any]]:
+    def search(self, query: str, limit: int = 3, **kwargs) -> list[Mapping[str, Any]]:
         """
         Query the Chroma collection for semantically similar documents.
 

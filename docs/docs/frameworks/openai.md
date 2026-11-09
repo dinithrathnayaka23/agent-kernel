@@ -9,7 +9,7 @@ Integrate OpenAI's official Agents SDK with Agent Kernel.
 ## Installation
 
 ```bash
-pip install agentkernel[openai]
+uv add "agentkernel[openai]"
 ```
 
 ## Basic Usage
@@ -114,6 +114,73 @@ Structured output applies to non-streaming execution only. Streamed runs emit ty
 
 OpenAI has **full round-trip** fidelity for the reserved [`framework_context`](../core-concepts/session.md#framework-context--per-run-state) session key. It is injected as the OpenAI Agents SDK run **context** (`Runner.run(..., context=...)`), which tools read and mutate in place via `RunContextWrapper.context`; the mutated object is written back to the session after a successful run, so every key — including ones a tool adds mid-run — survives to the next turn.
 
+## Native run options
+
+The OpenAI Agents SDK's own run arguments (`max_turns`, `hooks`, `run_config`, `error_handlers`)
+are declared per agent with
+[`Module.run_options`](../core-concepts/runner.md#native-run-options) and merged into `Runner.run` /
+`Runner.run_streamed`, identical in both modes:
+
+```python
+from agents import RunConfig, RunHooks
+
+class ProgressHooks(RunHooks):
+    async def on_tool_start(self, context, agent, tool) -> None:
+        ...  # Session.current() resolves here
+
+OpenAIModule([agent]).run_options(
+    agent,
+    max_turns=25,                                            # the SDK default is 10
+    hooks=ProgressHooks(),
+    run_config=RunConfig(call_model_input_filter=trim_history),
+)
+```
+
+Reserved (raise `ValueError` at declaration): `starting_agent`, `input`, `session` (the
+`OpenAISession` on the Agent Kernel session), `context` (the framework context above), and
+`conversation_id`, `previous_response_id`, `auto_previous_response_id`, which the SDK rejects
+alongside the session the runner always passes.
+
+## Human in the loop
+
+Declare a gated tool with the SDK's own flag:
+
+```python
+@function_tool(needs_approval=True)
+def issue_refund(order_id: str) -> str: ...
+```
+
+Or pass it to the tool builder, which forwards its keyword options to `function_tool` and leaves the
+tool a plain function with nothing framework-specific on it. The options apply to every function in
+the call, so tools wanting different ones are bound separately:
+
+```python
+def issue_refund(order_id: str) -> str: ...
+
+tools = OpenAIToolBuilder.bind([issue_refund], needs_approval=True)
+```
+
+The run pauses before the tool executes and Agent Kernel returns a paused reply. Two limits are
+specific to this adapter, and both are reported rather than silently worked around:
+
+- **A structured answer is refused.** An approval is recorded as a boolean — `RunState.approve()`
+  takes no value — so there is nowhere to put "the human chose Large". A `payload` on a decision is
+  rejected with a message saying so. **Model "I need a value" as an ordinary question, not a gated
+  tool**; or have the model *propose* a value in the tool arguments and let the human approve or deny
+  it.
+- **A prompt sent beside a decision is refused.** `Runner.run()`'s input is either a `RunState` or new
+  input, never both.
+
+**A stale resume is not detected.** Pause, run an ordinary turn, then answer the old pause: you get a
+confident answer computed as though the intervening turns never happened. Neither the SDK nor Agent
+Kernel tracks this — answer a pause before continuing the conversation.
+
+This is also the only adapter that can hold **two paused runs at once**: a `RunState` is a
+self-contained snapshot, so a second pause appends rather than replacing, and each is resumed by its
+own `run_id`.
+
+See [Human in the Loop](../advanced/human-in-the-loop.md).
+
 ## Features
 
 - ✅ Function calling
@@ -130,3 +197,7 @@ See [examples/cli/openai](https://github.com/yaalalabs/agent-kernel/tree/develop
 For structured output, see [examples/cli/openai_structured](https://github.com/yaalalabs/agent-kernel/tree/develop/examples/cli/openai_structured) and [examples/api/openai_structured](https://github.com/yaalalabs/agent-kernel/tree/develop/examples/api/openai_structured) (REST API + post-execution hook).
 
 For per-run context/state carried across turns, see [examples/cli/openai_context](https://github.com/yaalalabs/agent-kernel/tree/develop/examples/cli/openai_context) (a cart kept in `framework_context`, seeded by a pre-hook and round-tripped by the runner).
+
+For per-agent native run options, see [examples/cli/openai-run-options](https://github.com/yaalalabs/agent-kernel/tree/develop/examples/cli/openai-run-options) (`max_turns`, a `RunHooks` progress hook and a `RunConfig` with `call_model_input_filter`, with a deterministic `Run stats:` line on every reply).
+
+For run options computed per run, see [examples/cli/openai-dynamic-run-options](https://github.com/yaalalabs/agent-kernel/tree/develop/examples/cli/openai-dynamic-run-options) (a `Module.run_options` factory that stamps the session id onto a `RunConfig` and tightens `max_turns` for guest sessions, declared beside static keywords).

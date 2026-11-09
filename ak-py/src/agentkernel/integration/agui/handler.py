@@ -1,7 +1,8 @@
 """AG-UI surface: discovery, run routes, and the run lifecycle."""
 
 import logging
-from typing import Any, AsyncGenerator, Optional
+from collections.abc import AsyncGenerator
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -12,6 +13,7 @@ from ...auth.handler import AuthValidator
 from ...core.base import Agent
 from ...core.chat_service import AgentHandler, ChatService
 from ...core.config import AKConfig
+from ...core.event import RunPaused
 from ...core.runtime import Runtime
 from ...core.service import AgentService
 from .mapping import AGUIMapper
@@ -22,7 +24,7 @@ from .state import AGUIState
 class AGUIRequestHandler(AuthorisedRESTRequestHandler):
     """AG-UI routes: GET /agents, POST /{agent_name}, and POST / when `agui.default_agent` is set."""
 
-    def __init__(self, authoriser: Optional[Authoriser] = None, auth_validator: Optional[AuthValidator] = None):
+    def __init__(self, authoriser: Authoriser | None = None, auth_validator: AuthValidator | None = None):
         """
         :param authoriser: Authoriser for the AG-UI routes.
         :param auth_validator: Wrapped as an Authoriser when `authoriser` is omitted.
@@ -34,7 +36,7 @@ class AGUIRequestHandler(AuthorisedRESTRequestHandler):
         except ImportError as e:
             raise ValueError(
                 "AG-UI support requires the 'ag-ui-protocol' package, which ships in Agent Kernel's "
-                "'agui' extra. Install it with: pip install \"agentkernel[agui]\""
+                "'agui' extra. Install it with: uv add \"agentkernel[agui]\""
             ) from e
 
         if authoriser is None:
@@ -174,6 +176,31 @@ class AGUIRequestHandler(AuthorisedRESTRequestHandler):
 
         return router
 
+    async def _resolve_run_inputs(self, agent_name: str, request: Request) -> tuple[str | None, Agent, Any, list]:
+        """Everything that can still be reported as an HTTP status, before any state is written.
+
+        Shared verbatim with the queue-mode handler (spec #710 §7) so the two execution models
+        cannot drift on the 404/400 contract. `to_requests` runs here, before anything is stored,
+        so a rejected part (audio, video) leaves nothing behind.
+
+        :param agent_name: Agent to run.
+        :param request: Incoming request carrying the RunAgentInput body.
+        :return: The resolved user, agent, parsed run input, and mapped requests.
+        :raises HTTPException: 400 for an unparsable or unusable body, 404/400 from agent resolution.
+        """
+        user_id = self._resolve_user(request)
+        agent = self._resolve_agent(agent_name)
+
+        try:
+            body = await request.json()
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Request body is not valid JSON: {e}")
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="Request body must be a RunAgentInput object")
+
+        run_input = AGUIRunInput.parse(body)
+        return user_id, agent, run_input, AGUIRunInput.to_requests(run_input)
+
     async def _run(self, agent_name: str, request: Request) -> StreamingResponse:
         """Validate a run request and hand back the event stream.
 
@@ -191,18 +218,8 @@ class AGUIRequestHandler(AuthorisedRESTRequestHandler):
         """
         from ag_ui.encoder import EventEncoder
 
-        user_id = self._resolve_user(request)
-        agent = self._resolve_agent(agent_name)
+        user_id, agent, run_input, requests = await self._resolve_run_inputs(agent_name, request)
 
-        try:
-            body = await request.json()
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Request body is not valid JSON: {e}")
-        if not isinstance(body, dict):
-            raise HTTPException(status_code=400, detail="Request body must be a RunAgentInput object")
-
-        run_input = AGUIRunInput.parse(body)
-        requests = AGUIRunInput.to_requests(run_input)
         handler = self._chat_service.prepare_agent_handler(run_input.thread_id, agent_name)
         session = handler.service.session if handler.service is not None else None
         if session is None:
@@ -225,8 +242,8 @@ class AGUIRequestHandler(AuthorisedRESTRequestHandler):
         handler: AgentHandler,
         requests: list,
         run_input: Any,
-        state_before: Optional[dict],
-        user_id: Optional[str],
+        state_before: dict | None,
+        user_id: str | None,
     ) -> AsyncGenerator[str, None]:
         """Yield the run's encoded AG-UI events.
 
@@ -249,6 +266,7 @@ class AGUIRequestHandler(AuthorisedRESTRequestHandler):
         from ag_ui.core import RunErrorEvent, RunFinishedEvent, RunStartedEvent, StateSnapshotEvent
 
         yield encoder.encode(RunStartedEvent(thread_id=run_input.thread_id, run_id=run_input.run_id, parent_run_id=run_input.parent_run_id))
+        paused: Any | None = None
 
         service = handler.service
         session = service.session if service is not None else None
@@ -258,13 +276,18 @@ class AGUIRequestHandler(AuthorisedRESTRequestHandler):
             return
 
         agent_name = agent.name
-        error: Optional[str] = None
+        error: str | None = None
         try:
             async for chunk in handler.run_stream_async(requests, acting_user_id=user_id):
                 if chunk.error:
                     error = chunk.error
                     continue
                 if chunk.event is None:
+                    continue
+                if isinstance(chunk.event, RunPaused):
+                    # Carried to the terminal event rather than mapped mid-stream: in this protocol
+                    # a pause is an *outcome* of the run, not something that happened during it.
+                    paused = chunk.event
                     continue
                 agui_event = AGUIMapper.to_agui(chunk.event)
                 if agui_event is not None:
@@ -278,8 +301,53 @@ class AGUIRequestHandler(AuthorisedRESTRequestHandler):
             yield encoder.encode(RunErrorEvent(message=error))
             return
 
+        # Before the terminal event, so a client resuming from the snapshot has it in hand.
         state_after = AGUIState.read_state(session)
         if state_after != state_before:
             yield encoder.encode(StateSnapshotEvent(snapshot=state_after))
 
+        if paused is not None:
+            yield encoder.encode(
+                RunFinishedEvent(
+                    thread_id=run_input.thread_id,
+                    run_id=run_input.run_id,
+                    outcome=self._interrupt_outcome(paused),
+                )
+            )
+            return
+
         yield encoder.encode(RunFinishedEvent(thread_id=run_input.thread_id, run_id=run_input.run_id))
+
+    @staticmethod
+    def _interrupt_outcome(paused: Any) -> Any:
+        """Map a `RunPaused` onto the protocol's interrupt outcome.
+
+        `kind` passes through as `reason` untranslated: `reason` is a free-form string, not a closed
+        enum, so no translation table is needed — including for any kind Agent Kernel adds later.
+
+        What the protocol has no field for rides in `metadata` rather than being forced into one that
+        means something else: `response_schema` is a JSON Schema, while Agent Kernel's `payload` is
+        the question as the framework posed it.
+
+        :param paused: The RunPaused event the run ended with.
+        :return: A RunFinishedInterruptOutcome carrying one Interrupt per interruption.
+        """
+        from ag_ui.core import Interrupt, RunFinishedInterruptOutcome
+
+        interrupts = []
+        for interruption in paused.interruptions:
+            metadata = {
+                key: value
+                for key, value in (("tool_name", interruption.tool_name), ("arguments", interruption.arguments), ("payload", interruption.payload))
+                if value is not None
+            }
+            interrupts.append(
+                Interrupt(
+                    id=interruption.id,
+                    reason=interruption.kind,
+                    message=interruption.message,
+                    tool_call_id=interruption.id if interruption.tool_name else None,
+                    metadata=metadata or None,
+                )
+            )
+        return RunFinishedInterruptOutcome(interrupts=interrupts)

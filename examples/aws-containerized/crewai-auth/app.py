@@ -1,5 +1,4 @@
 import os
-from typing import Optional
 
 import jwt
 from agentkernel.api import RESTAPI, AgentRESTRequestHandler
@@ -14,6 +13,7 @@ math_agent = Agent(
     backstory="You provide help with math problems. Explain your reasoning at each step and include examples. \
         If prompted for anything else you refuse to answer.",
     verbose=False,
+    llm="openai/gpt-4.1-mini",
 )
 
 history_agent = Agent(
@@ -21,6 +21,7 @@ history_agent = Agent(
     goal="Specialist agent for historical questions",
     backstory="You provide assistance with historical queries. Explain important events and context clearly.",
     verbose=False,
+    llm="openai/gpt-4.1-mini",
 )
 
 router = APIRouter()
@@ -42,7 +43,7 @@ CrewAIModule([math_agent, history_agent])
 
 # Defining the Custom Auth validator for auth token validation
 class CustomAuthValidator(AuthValidator):
-    def validate(self, token: str, context: Optional[ValidationContext] = None) -> ValidationResult:
+    def validate(self, token: str, context: ValidationContext | None = None) -> ValidationResult:
         """Validate JWT token and return validation result."""
         try:
             payload = jwt.decode(token, options={"verify_signature": False})

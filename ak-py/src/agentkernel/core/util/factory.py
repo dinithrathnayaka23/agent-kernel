@@ -9,8 +9,9 @@ message — plus the one typed error the factories raise.
 """
 
 import importlib
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator, TypeVar
+from typing import TypeVar
 
 T = TypeVar("T")
 
@@ -61,4 +62,4 @@ def require_extra(extra: str, feature: str) -> Iterator[None]:
     try:
         yield
     except ImportError as exc:
-        raise ImportError(f"{feature} requires the '{extra}' extra: pip install \"agentkernel[{extra}]\"") from exc
+        raise ImportError(f"{feature} requires the '{extra}' extra: uv add \"agentkernel[{extra}]\"") from exc

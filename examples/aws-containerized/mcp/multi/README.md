@@ -13,6 +13,12 @@ Agents are exposed as MCP tools and can be accessed via both the **REST API** an
 * Agents automatically registered as MCP tools
 * Redis-backed state (optional)
 
+Each ECS task runs `RESTAPI.run()` with no queue configured, so it runs the queue pipeline inside
+the task on the in-memory queue: an MCP agent tool call is queued, run by the task's agent-runner
+thread, and its reply read back from the in-memory response store. Expect each reply to take at
+least about one second, since the reply is picked up by polling the store. `stateless_http: true`
+keeps every MCP request self-contained, so any task behind the load balancer can serve it.
+
 ---
 
 ## Enabling MCP in Terraform
@@ -39,9 +45,7 @@ module "containered_agents" {
   providers = { aws = aws, docker = docker }
 
   # Basic ECS configuration
-  product_alias        = var.product_alias
-  env_alias            = var.env_alias
-  module_name          = var.module_name
+  prefix               = var.prefix
   container_type       = "ecs"
   region               = var.region
 

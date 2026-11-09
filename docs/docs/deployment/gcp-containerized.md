@@ -7,7 +7,7 @@ sidebar_position: 7
 Deploy Agent Kernel agents as always-on containerized services on **GCP Cloud Run** with `min_instance_count ≥ 1`. Uses the [`yaalalabs/ak-containerized/google`](https://registry.terraform.io/modules/yaalalabs/ak-containerized/google) Terraform module.
 
 :::note Supported execution modes
-Cloud Run runs Agent Kernel's built-in REST server, so it supports synchronous JSON REST **and SSE event streaming** (`execution.mode: stream`) with streaming-capable frameworks (OpenAI Agents SDK, LangGraph, Google ADK, Pydantic AI). Queue-based execution and WebSocket delivery are currently AWS-only; see the [Deployment Overview](./overview#execution-modes).
+Cloud Run runs Agent Kernel's built-in REST server, so it supports synchronous JSON REST **and SSE event streaming** (`execution.mode: rest_sync` with `execution.message_type: delta`) with streaming-capable frameworks (OpenAI Agents SDK, LangGraph, Google ADK, Pydantic AI, Microsoft Agent Framework, Claude Agent SDK). Queue-based execution and WebSocket delivery are currently AWS-only; see the [Deployment Overview](./overview#execution-modes).
 :::
 
 ## Overview
@@ -110,9 +110,7 @@ module "containerized_agent" {
 
   project_id           = var.project_id
   region               = var.region
-  product_alias        = var.product_alias
-  env_alias            = var.env_alias
-  module_name          = var.module_name
+  prefix               = var.prefix
   product_display_name = "AK GCP Containerized"
 
   package_path       = "${path.module}/../dist"
@@ -142,9 +140,7 @@ module "containerized_agent" {
 
   project_id           = var.project_id
   region               = var.region
-  product_alias        = var.product_alias
-  env_alias            = var.env_alias
-  module_name          = var.module_name
+  prefix               = var.prefix
   product_display_name = "AK GCP Containerized Auth"
 
   package_path       = "${path.module}/../dist"
@@ -195,9 +191,7 @@ terraform apply
 |----------|----------|---------|-------------|
 | `project_id` | ✅ | - | GCP project ID |
 | `region` | ✅ | - | GCP region (e.g. `us-central1`) |
-| `product_alias` | ✅ | - | Short name for resource naming |
-| `env_alias` | ✅ | - | Environment label (e.g. `dev`, `prod`) |
-| `module_name` | ✅ | - | Module identifier |
+| `prefix` | ✅ | - | Prefix applied to every resource name (e.g. `myapp-dev-chat`) |
 | `package_path` | ✅ | - | Path to Docker build context |
 | `container_port` | ❌ | `8000` | Port the container listens on |
 | `create_redis_cluster` | ❌ | `false` | Create Memorystore Redis |

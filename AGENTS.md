@@ -31,10 +31,10 @@ scratch by grepping; the skill is maintained precisely so agents don't have to.
 ak-py/                  The agentkernel PyPI package (core framework, all Python source + tests)
   src/agentkernel/
     core/                Framework-agnostic abstractions (Session, Agent, Runner, Module, Runtime, Config, hooks, tools)
-    framework/           Adapters: openai, crewai, langgraph, adk, smolagents
+    framework/           Adapters: openai, crewai, langgraph, adk, smolagents, pydanticai, claude
     api/                 REST, MCP, A2A server layers
     deployment/          AWS (Lambda + ECS), Azure Functions, GCP Cloud Run handlers
-    integration/         Slack, WhatsApp, Messenger, Instagram, Telegram, Teams, Gmail
+    integration/         adapter/ (the messaging seam) + Slack, WhatsApp, Messenger, Instagram, Telegram, Teams, Gmail
     knowledgebase/       ChromaDB, Neo4j, Starburst backends
     guardrail/           OpenAI, AWS Bedrock, Walled AI guardrail providers
     trace/               Langfuse, OpenLLMetry tracing adapters
@@ -105,10 +105,12 @@ reviews against them (full detail in the "House Patterns for New Features" secti
   Module-level functions are reserved for small stateless shared utilities and the tool functions the
   tool builders bind.
 
-When documentation changes, the React landing and features pages (`docs/src/pages/index.tsx`,
-`docs/src/pages/features.tsx`) hold hard-coded inventories of frameworks, integrations, providers,
-deployment targets, and capabilities; update them alongside `docs/docs/` (see
-`ak-dev-sync-docs-from-branch`).
+When documentation changes, the React landing and features pages hold hard-coded inventories of
+frameworks, integrations, providers, deployment targets, and capabilities; update them alongside
+`docs/docs/`. On the landing page they live in `docs/src/components/IntegrationsMarquee/data.tsx`,
+`ArchitectureOverview/data.tsx`, and `FeatureExplorer/data.tsx`; on the features page in
+`docs/src/pages/features.tsx` (see `ak-dev-sync-docs-from-branch`, *Docs-Site Landing and Features
+Pages*, for the change-type to entry mapping).
 
 ## Setup, build, lint, test
 
@@ -119,6 +121,8 @@ worth knowing that aren't spelled out there:
 
 - Formatting is black + isort at **line length 150** (`ak-py/pyproject.toml`), not black's
   default of 88 — don't "fix" long lines that are within the configured limit.
+- Ruff runs only the pyupgrade typing rules (`list[str]`, `X | None`, `collections.abc` imports),
+  not as a general linter; the rule is in `ak-dev-code-quality`.
 - `make lint-check-all` is the exact command `code-quality.yml` runs in CI — run it before
   considering a change to `ak-py/` or `examples/` done.
 
@@ -172,5 +176,3 @@ safe to run to sanity-check a change.
   asked to always be told before a commit runs.
 - Don't push, force-push, or open PRs unless explicitly asked.
 - Never edit files under `docs/versioned_docs/` — those are frozen snapshots of past releases.
-- [CODEOWNERS](CODEOWNERS) exists — check it before assuming no one needs to review a change to a
-  given path.

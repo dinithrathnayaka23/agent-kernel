@@ -28,6 +28,7 @@ import {
   MdMenuBook,
   MdExtension,
   MdHub,
+  MdDashboardCustomize,
   MdMessage,
   MdCloudUpload,
   MdFactCheck,
@@ -38,8 +39,10 @@ import {
   FaInstagram,
   FaTelegram,
   FaGithub,
+  FaMicrosoft,
 } from "react-icons/fa";
 import {
+  SiClaude,
   SiGmail,
   SiGooglegemini,
   SiLangchain,
@@ -527,7 +530,7 @@ function ProblemTable() {
     {
       problem: "Observability",
       without: "Manual instrumentation",
-      with: "Langfuse/OpenLLMetry/Pydantic Logfire with one config line",
+      with: "Langfuse/OpenLLMetry/Pydantic Logfire/AWS CloudWatch with one config line",
     },
     {
       problem: "Guardrails & Safety",
@@ -779,6 +782,7 @@ function ProblemTable() {
 
 /* ─── Core Features ─────────────────────────────────────────────────────── */
 
+/** Render core capability cards with links to their documentation. */
 function CoreFeatures() {
   const sectionRef = useRef<HTMLElement>(null);
 
@@ -790,7 +794,7 @@ function CoreFeatures() {
         "Agent, Runner, Session, Module, Runtime, and Tools, a unified API across all frameworks. Build once, run on any supported framework.",
       highlights: [
         "Unified Python API",
-        "Framework adapters for 4 SDKs",
+        "Framework adapters for 8 SDKs",
         "Portable tool functions via ToolBuilder",
         "Framework-agnostic hooks",
       ],
@@ -800,7 +804,7 @@ function CoreFeatures() {
       icon: <MdSwapHoriz />,
       title: "Framework-Neutral Runtime",
       description:
-        "OpenAI Agents, LangGraph, CrewAI, Google ADK, Smolagents, and Pydantic AI, run them all simultaneously in one runtime. Switch frameworks by changing 2 import lines.",
+        "OpenAI Agents, LangGraph, CrewAI, Google ADK, Smolagents, Pydantic AI, Microsoft Agent Framework, and the Claude Agent SDK, run them all simultaneously in one runtime. Switch frameworks by changing 2 import lines.",
       highlights: [
         "OpenAI Agents SDK",
         "LangGraph",
@@ -808,6 +812,8 @@ function CoreFeatures() {
         "Google ADK",
         "Smolagents",
         "Pydantic AI",
+        "Claude Agent SDK",
+        "Microsoft Agent Framework",
       ],
       link: "/docs/frameworks/overview",
     },
@@ -841,11 +847,12 @@ function CoreFeatures() {
       icon: <MdMenuBook />,
       title: "Knowledge Bases",
       description:
-        "Built-in retrieval for curated knowledge sources and storage for agent reinforcement learning. Neo4j, Starburst Galaxy, ChromaDB, and custom SQL data sources.",
+        "Built-in retrieval for curated knowledge sources and storage for agent reinforcement learning. Neo4j, Starburst Galaxy, ChromaDB, Open Knowledge Format bundles, and custom SQL data sources.",
       highlights: [
         "ChromaDB — vector/semantic search",
         "Neo4j — entity and relationship graphs",
         "Starburst Galaxy — SQL over MongoDB, Sheets, PostgreSQL",
+        "Open Knowledge Format — markdown bundles, no database to run",
         "semantic_map keeps agent prompts portable",
       ],
       link: "/docs/advanced/knowledge-bases",
@@ -854,12 +861,12 @@ function CoreFeatures() {
       icon: <MdTerminal />,
       title: "Sandboxed Code Execution",
       description:
-        "Agents run code, shell commands, and file operations in isolated sandboxes. The Execution Broker routes every execution to a pluggable, policy-governed provider, in-process or over a queue to a separate worker fleet.",
+        "Agents run code, shell commands, file operations, and permitted package installs in isolated sandboxes. The Execution Broker routes every execution to a pluggable, policy-governed provider, in-process or over a queue to a separate worker fleet.",
       highlights: [
         "local_subprocess, docker, kubernetes, e2b, daytona, ec2_ssm",
         "Queue broker over SQS, Kafka, or NATS for long-running executions",
         "Session-persistent workspaces",
-        "Fail-closed network, filesystem, CPU, and memory policies",
+        "Fail-closed network, filesystem, CPU, and memory policies; per-profile language and package-install permissions; configurable language runtimes on Docker and Kubernetes",
         "Agent or end-user identity",
       ],
       link: "/docs/advanced/sandbox",
@@ -903,8 +910,10 @@ function CoreFeatures() {
         "Langfuse integration",
         "OpenLLMetry (OpenTelemetry-based)",
         "Pydantic Logfire integration",
+        "AWS CloudWatch (X-Ray) integration",
         "Multi-level verbosity",
         "Cost and latency tracking",
+        "Fetch spans back for evaluation",
       ],
       link: "/docs/advanced/traceability",
     },
@@ -1161,6 +1170,7 @@ function SandboxSection() {
 
 /* ─── Framework Support ─────────────────────────────────────────────────── */
 
+/** Render supported framework links and the card for running multiple frameworks together. */
 function FrameworkSupport() {
   const sectionRef = useRef<HTMLElement>(null);
 
@@ -1263,21 +1273,21 @@ function FrameworkSupport() {
       ),
     },
     {
-      key: "livekit",
-      name: "LiveKit",
+      key: "claude-agent-sdk",
+      name: "Claude Agent SDK",
       description:
-        "LiveKit provides the complete stack for voice-based AI agents.",
-      link: "https://docs.livekit.io/",
-      external: true,
-      logo: (
-        <img
-          src="/img/integrations/livekit.png"
-          alt=""
-          className={styles.frameworkLogoImg}
-          width={38}
-          height={38}
-        />
-      ),
+        "Anthropic's Claude Code agent harness: built-in file, shell and web tools, subagents, hooks and permissions, on Claude models.",
+      // Drop /next after the Claude Agent SDK adapter is released.
+      link: "/docs/next/frameworks/claude-agent-sdk",
+      logo: <SiClaude className={styles.frameworkLogoImg} size={52} color="#D97757" aria-hidden="true" />,
+    },
+    {
+      key: "maf",
+      name: "Microsoft Agent Framework",
+      description:
+        "Microsoft Agent Framework (MAF), the unified successor to AutoGen and Semantic Kernel.",
+      link: "/docs/next/frameworks/microsoft-agents",
+      logo: <FaMicrosoft className={styles.frameworkLogoIcon} aria-hidden="true" />,
     },
   ];
 
@@ -1508,9 +1518,9 @@ function TestingSection() {
       icon: <MdFactCheck />,
       title: "Pluggable Evaluators",
       description:
-        "Every comparison runs through an AKEvaluator. DeepEval ships built in; swap in your own backend with one line of test-config.yaml.",
+        "Every comparison runs through an AKEvaluator. DeepEval, Opik and JEV ship built in; swap in your own backend with one line of test-config.yaml.",
       highlights: [
-        "DeepEval built in: quasi-exact match and GEval",
+        "DeepEval, Opik and JEV built in: exact match, fuzzy match, GEval and a hosted judge",
         "Bring your own AKEvaluator subclass",
         "Selected by short name or dotted path",
         "Backend failures raise, never read as a failing agent",
@@ -1743,6 +1753,13 @@ const MESSAGING_PLATFORMS = [
     color: "#FF7B6E",
     link: "/docs/integrations/gmail",
   },
+  {
+    name: "LiveKit",
+    icon: <img src="/img/integrations/livekit-mark.svg" alt="" width={28} height={28} />,
+    color: "#00DDFF",
+    // Drop /next after the LiveKit integration is released.
+    link: "/docs/next/integrations/livekit",
+  },
 ] as const;
 
 /* ─── Messaging Section ─────────────────────────────────────────────────── */
@@ -1809,7 +1826,7 @@ function MessagingSection() {
       <div className="container">
         <div className={styles.sectionHeader}>
           <p className={styles.sectionLabel}>06: Messaging</p>
-          <h2 className={styles.sectionTitle}>Messaging Integrations</h2>
+          <h2 className={styles.sectionTitle}>Messaging & Voice Integrations</h2>
           <p className={styles.sectionSubtitle}>
             Your agents meet users on the channels they already use. Every
             integration routes through the same Agent Kernel runtime. Pick a
@@ -1900,6 +1917,15 @@ function ProtocolSupport() {
         "Agent-to-Agent (A2A) is a communication pattern where multiple AI agents interact directly with each other to share context, delegate tasks, and coordinate decisions. It enables complex workflows by allowing specialized agents to collaborate instead of relying on a single monolithic system. Agent Kernel natively supports exposing any agent over the A2A protocol by switching configuration.",
       link: "/docs/api/a2a-server",
       linkLabel: "A2A Server Docs",
+    },
+    {
+      key: "a2ui",
+      icon: <MdDashboardCustomize />,
+      title: "A2UI - Generative UI",
+      description:
+        "A2UI is a format for an agent to answer with an interface rather than prose: a JSON document naming components your frontend already implements, which it renders and sends interactions back from. Agent Kernel carries it end to end from two config keys — the reply arrives as an object with its format named, over REST, MCP and AG-UI alike — while the component catalog stays with your application, where it belongs.",
+      link: "/docs/next/advanced/a2ui",
+      linkLabel: "A2UI Docs",
     },
   ];
   useLayoutEffect(() => {

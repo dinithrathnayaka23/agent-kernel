@@ -7,14 +7,15 @@ pipeline and the ECS/Lambda queue mode byte-identical on the wire by constructio
 producers and ECS consumers (or vice versa) interoperate during a migration.
 """
 
-import json
 import threading
+from collections.abc import Mapping
 from enum import Enum
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any
 
 import boto3
 from pydantic import BaseModel, ConfigDict
 
+from ...core.util.payload import PayloadCodec
 from ..envelope import QueueMessage, QueueName
 from .base import QueueTransport, TransportConsumer
 
@@ -42,9 +43,9 @@ class SQSQueueInputMessage(BaseModel):
     """Typed FIFO SQS send_message kwargs excluding QueueUrl."""
 
     MessageBody: str  # a stringified JSON of the message content
-    MessageGroupId: Optional[str] = None
-    MessageDeduplicationId: Optional[str] = None
-    MessageAttributes: Optional[dict] = None
+    MessageGroupId: str | None = None
+    MessageDeduplicationId: str | None = None
+    MessageAttributes: dict | None = None
 
     model_config = ConfigDict(extra="allow")
 
@@ -53,7 +54,21 @@ def serialize_message_body(message_body: Any) -> str:
     """Convert a message payload into the string body required by SQS.
 
     Strings are passed through unchanged. Pydantic models are converted with exclude_none=True
-    before being JSON encoded, and all other values are serialized with json.dumps.
+    before being JSON encoded, and all other values go through PayloadCodec, so a response body
+    holding a value that never passed payload validation still serializes instead of raising and
+    losing the message to retry exhaustion.
+
+    **This is the only explicit ``PayloadCodec`` call left in the tree, and the only reason it is
+    here is the second caller.** Everywhere else the rule sits on a field — ``QueueMessage.body``
+    is a ``JSONText``, so a sender hands it an object and the envelope encodes — which is why
+    ``nats.py``, ``kafka.py`` and ``in_memory.py`` have nothing like this. ``SQSTransport.send``
+    does not need it either: it arrives with ``message.body``, already a ``str``, and falls through
+    the first branch. The dict branch exists for ``SQSHandler``, which ``ECSAgentRunner`` and
+    ``ServerlessAgentRunner`` use to write the output queue **without** building a ``QueueMessage``.
+
+    So: do not delete this as dead code because the transports look symmetric, and do not copy it
+    into a new transport. If those two runners are ever converged onto the envelope, this whole
+    function goes with them and ``PayloadCodec.encode`` drops to one internal caller.
 
     :param message_body: The message payload to serialize.
     :return: A string representation suitable for the SQS MessageBody field.
@@ -64,10 +79,10 @@ def serialize_message_body(message_body: Any) -> str:
     if hasattr(message_body, "model_dump"):
         message_body = message_body.model_dump(exclude_none=True)
 
-    return json.dumps(message_body)
+    return PayloadCodec.encode(message_body)
 
 
-def build_message_attribute(custom_attribute: CustomAttribute) -> Dict[str, Any]:
+def build_message_attribute(custom_attribute: CustomAttribute) -> dict[str, Any]:
     """
     Build a boto3-compatible SQS message attribute payload.
 
@@ -77,7 +92,7 @@ def build_message_attribute(custom_attribute: CustomAttribute) -> Dict[str, Any]
     :param custom_attribute: The custom attribute definition to convert
     :return: A dictionary shaped for the SQS MessageAttributes field
     """
-    message_attribute: Dict[str, Any] = {"DataType": custom_attribute.datatype.value}
+    message_attribute: dict[str, Any] = {"DataType": custom_attribute.datatype.value}
     if custom_attribute.datatype == AttributeDataType.BINARY:
         message_attribute["BinaryValue"] = custom_attribute.value
     else:
@@ -85,7 +100,7 @@ def build_message_attribute(custom_attribute: CustomAttribute) -> Dict[str, Any]
     return message_attribute
 
 
-def build_message_attributes(message_attributes: Optional[List[CustomAttribute]]) -> Optional[Dict[str, Any]]:
+def build_message_attributes(message_attributes: list[CustomAttribute] | None) -> dict[str, Any] | None:
     """
     Convert a list of custom attributes into an SQS attributes map.
 
@@ -99,7 +114,7 @@ def build_message_attributes(message_attributes: Optional[List[CustomAttribute]]
     if message_attributes is None:
         return None
 
-    built_message_attributes: Dict[str, Any] = {}
+    built_message_attributes: dict[str, Any] = {}
     for custom_attribute in message_attributes:
         if custom_attribute.name in built_message_attributes:
             raise ValueError(f"Duplicate SQS message attribute name: {custom_attribute.name}")
@@ -109,11 +124,11 @@ def build_message_attributes(message_attributes: Optional[List[CustomAttribute]]
 
 def build_send_message_kwargs(
     message_body: Any,
-    message_group_id: Optional[str] = None,
-    message_deduplication_id: Optional[str] = None,
-    message_attributes: Optional[List[CustomAttribute]] = None,
+    message_group_id: str | None = None,
+    message_deduplication_id: str | None = None,
+    message_attributes: list[CustomAttribute] | None = None,
     **extra_kwargs: Any,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Assemble the keyword arguments expected by boto3 send_message.
 
@@ -136,7 +151,7 @@ def build_send_message_kwargs(
     ).model_dump(exclude_none=True)
 
 
-def get_message_system_attributes(raw_queue_message_record: Mapping[str, Any]) -> Dict[str, Any]:
+def get_message_system_attributes(raw_queue_message_record: Mapping[str, Any]) -> dict[str, Any]:
     """
     Return the SQS system attributes from a raw SQS message record.
 
@@ -151,7 +166,7 @@ def get_message_system_attributes(raw_queue_message_record: Mapping[str, Any]) -
     return dict(attrs)
 
 
-def get_message_custom_attributes(raw_queue_message_record: Mapping[str, Any]) -> Dict[str, Any]:
+def get_message_custom_attributes(raw_queue_message_record: Mapping[str, Any]) -> dict[str, Any]:
     """
     Return the custom SQS message attributes from a raw SQS message record.
 
@@ -163,7 +178,7 @@ def get_message_custom_attributes(raw_queue_message_record: Mapping[str, Any]) -
     """
     # Lambda uses "messageAttributes", boto3 receive_message uses "MessageAttributes"
     message_attributes = raw_queue_message_record.get("MessageAttributes") or raw_queue_message_record.get("messageAttributes") or {}
-    flattened_attributes: Dict[str, Any] = {}
+    flattened_attributes: dict[str, Any] = {}
     for attribute_name, attribute in message_attributes.items():
         if isinstance(attribute, Mapping):
             attribute_value = (
@@ -189,7 +204,7 @@ class SQSTransportConsumer(TransportConsumer):
         self._queue_url = queue_url
         self._client = boto3.client("sqs")
 
-    def fetch(self, batch_size: int, wait_seconds: float) -> List[QueueMessage]:
+    def fetch(self, batch_size: int, wait_seconds: float) -> list[QueueMessage]:
         response = self._client.receive_message(
             QueueUrl=self._queue_url,
             MaxNumberOfMessages=batch_size,
@@ -250,7 +265,7 @@ class SQSTransport(QueueTransport):
         return SQSTransportConsumer(self._queue_urls[queue])
 
     @staticmethod
-    def _to_custom_attributes(attributes: Dict[str, str]) -> Optional[List[CustomAttribute]]:
+    def _to_custom_attributes(attributes: dict[str, str]) -> list[CustomAttribute] | None:
         """Map envelope attributes to SQS custom attributes; None when empty (matches the ECS wire shape)."""
         if not attributes:
             return None

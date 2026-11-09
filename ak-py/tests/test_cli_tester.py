@@ -14,8 +14,7 @@ import types
 import pytest
 
 from agentkernel.core.util.factory import AKConfigError
-from agentkernel.test.config import AKTestConfig
-from agentkernel.test.core.evaluator import (
+from agentkernel.test import (
     AKEvaluationCase,
     AKEvaluationError,
     AKEvaluationResult,
@@ -23,6 +22,7 @@ from agentkernel.test.core.evaluator import (
     AKMetricNotSupported,
     AKMissingInput,
 )
+from agentkernel.test.config import AKTestConfig
 from agentkernel.test.test import Mode
 from agentkernel.test.test import Test as CliTest
 
@@ -166,6 +166,14 @@ async def test_expect_forwards_return_metrics(monkeypatch):
 
 
 # --- mode routing ------------------------------------------------------------------------- #
+
+
+def test_evaluator_interface_is_exported_from_agentkernel_test():
+    import agentkernel.test as public
+    import agentkernel.test.core.evaluator as core
+
+    for name in core.__all__:
+        assert getattr(public, name) is getattr(core, name)
 
 
 def test_compare_score_mode_routes_to_evaluate_by_score(monkeypatch):
@@ -316,7 +324,7 @@ def test_resolve_evaluator_class_dotted_path_to_fake(monkeypatch):
 
 
 def test_resolve_evaluator_class_unknown_short_name_raises():
-    with pytest.raises(AKConfigError, match=r"\['deepeval', 'opik'\]"):
+    with pytest.raises(AKConfigError, match=r"\['deepeval', 'opik', 'jev'\]"):
         CliTest._resolve_evaluator_class("deepval")
 
 
@@ -381,6 +389,37 @@ def test_resolve_evaluator_class_opik_missing_extra_raises_import_error(monkeypa
     monkeypatch.setattr(builtins, "__import__", fake_import)
     with pytest.raises(ImportError, match=r"agentkernel\[opik\]"):
         CliTest._resolve_evaluator_class("opik")
+
+
+def test_resolve_evaluator_class_builtin_jev():
+    from agentkernel.test.core.evaluator.jev import JevAKEvaluator
+
+    assert CliTest._resolve_evaluator_class("jev") is JevAKEvaluator
+
+
+def test_resolve_evaluator_class_jev_missing_extra_raises_import_error(monkeypatch):
+    # Same approach as the opik variant: force jev.py's top-level typesafe_sdk import to fail.
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "typesafe_sdk" or name.startswith("typesafe_sdk."):
+            raise ImportError(f"simulated missing dependency: {name}")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.delitem(sys.modules, "agentkernel.test.core.evaluator.jev", raising=False)
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    with pytest.raises(ImportError, match=r"agentkernel\[jev\]"):
+        CliTest._resolve_evaluator_class("jev")
+
+
+def test_compare_jev_under_fallback_raises_metric_not_supported(monkeypatch):
+    # The riskiest consumer path: the default mode (fallback) combined with a judge-only built-in.
+    monkeypatch.setenv("AK_TEST__EVALUATOR", "jev")
+    monkeypatch.setenv("AK_TEST__MODE", "fallback")
+    AKTestConfig._reset()
+    CliTest._reset_evaluator()
+    with pytest.raises(AKMetricNotSupported, match="mode: llm"):
+        CliTest.compare("Hello", ["Hello"])
 
 
 def test_opik_module_does_not_shadow_third_party_package():

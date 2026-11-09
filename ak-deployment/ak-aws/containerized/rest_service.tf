@@ -4,15 +4,15 @@
 module "rest_service" {
   source = "./modules/rest-service"
 
-  product_alias = var.product_alias
-  env_alias     = var.env_alias
-  module_name   = var.module_name
-  region        = var.region
-  prefix        = local.prefix
+  prefix = var.prefix
+  region = var.region
 
   vpc_id     = local.vpc_id
   vpc_cidr   = local.vpc_cidr
   subnet_ids = local.subnet_ids
+
+  alb_security_group_id         = var.rest_service.alb_security_group_id
+  ecs_service_security_group_id = var.rest_service.ecs_service_security_group_id
 
   ecs_cluster_arn = module.ecs.cluster_arn
 
@@ -28,6 +28,8 @@ module "rest_service" {
   dynamodb_thread_table_arn      = local.dynamodb_thread_table_arn
   dynamodb_thread_table_name     = local.dynamodb_thread_table_name
   enable_scheduling              = var.enable_scheduling
+  ssm_enabled                    = var.ssm_enabled && !var.queue_mode # in queue mode the agent runner owns secret reads
+  account_id                     = data.aws_caller_identity.current.account_id
   schedule_group_name            = local.schedule_group_name
   scheduler_execution_role_arn   = local.scheduler_execution_role_arn
   create_dynamodb_schedule_table = var.create_dynamodb_schedule_table
@@ -53,8 +55,9 @@ module "rest_service" {
   response_store_table_name = (var.queue_mode && !local.is_websocket_mode) ? aws_dynamodb_table.response_store[0].name : null
   queue_config              = var.queue_config
 
-  # WebSocket mode (async / stream): REST service handles connections and push.
+  # WebSocket mode (async): REST service handles connections and push.
   execution_mode                   = var.execution_mode
+  message_type                     = var.message_type
   websocket_mode                   = local.is_websocket_mode
   websocket_connections_table_name = local.is_websocket_mode ? module.websocket_connections[0].table_name : null
   websocket_connections_table_arn  = local.is_websocket_mode ? module.websocket_connections[0].table_arn : null
@@ -70,7 +73,7 @@ module "ecs" {
   source  = "terraform-aws-modules/ecs/aws"
   version = "6.10.0"
 
-  cluster_name = "${var.product_alias}-${var.env_alias}-${var.module_name}"
+  cluster_name = var.prefix
 
   tags = var.tags
 }

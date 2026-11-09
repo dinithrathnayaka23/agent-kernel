@@ -15,6 +15,8 @@ e2e:
     - type: cli
       path: examples/cli/openai_context
     - type: cli
+      path: examples/cli/openai-secret
+    - type: cli
       path: examples/cli/session-context
     - type: cli
       path: examples/cli/adk
@@ -33,6 +35,8 @@ e2e:
     - type: cli
       path: examples/cli/knowledgebase/openai/chromadb
     - type: cli
+      path: examples/cli/knowledgebase/openai/okf
+    - type: cli
       path: examples/cli/guardrail/openai
     - type: cli
       path: examples/cli/guardrail/bedrock
@@ -41,9 +45,39 @@ e2e:
     - type: cli
       path: examples/cli/pydanticai_context
     - type: cli
+      path: examples/cli/maf
+    - type: cli
+      path: examples/cli/maf_context
+    - type: cli
+      path: examples/cli/openai-run-options
+    - type: cli
+      path: examples/cli/openai-dynamic-run-options
+    - type: cli
+      path: examples/cli/langgraph-run-options
+    - type: cli
+      path: examples/cli/adk-run-options
+    - type: cli
+      path: examples/cli/pydanticai-run-options
+    - type: cli
+      path: examples/cli/maf-run-options
+    - type: cli
+      path: examples/cli/crewai-run-options
+    - type: cli
+      path: examples/cli/smolagents
+    - type: cli
+      path: examples/cli/smolagents-run-options
+    - type: cli
+      path: examples/cli/claude
+    - type: cli
+      path: examples/cli/claude_context
+    - type: cli
+      path: examples/cli/claude-run-options
+    - type: cli
       path: examples/cli/custom-evaluator
     - type: cli
       path: examples/cli/opik-evaluator
+    - type: cli
+      path: examples/cli/jev-evaluator
     # - type: cli
     #   path: examples/cli/guardrail/walledai
 
@@ -78,7 +112,17 @@ e2e:
     - type: api
       path: examples/api/openai_structured
     - type: api
+      path: examples/api/hitl
+    - type: api
+      path: examples/api/a2ui-openai
+    - type: api
       path: examples/api/adk
+    - type: api
+      path: examples/api/claude
+    - type: api
+      path: examples/api/claude-hitl
+    - type: api
+      path: examples/api/claude-streaming
     - type: api
       path: examples/api/multimodal/openai
     - type: api
@@ -114,6 +158,10 @@ e2e:
       path: examples/api/pydanticai
     - type: api
       path: examples/api/pydanticai-streaming
+    - type: api
+      path: examples/api/maf
+    - type: api
+      path: examples/api/maf-streaming
     - type: api
       path: examples/api/agui
     - type: api

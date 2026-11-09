@@ -7,7 +7,7 @@ AttachmentData dataclass used across all storage backends.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional
+from typing import ClassVar
 
 # Constants
 ATTACHMENT_KEY_PREFIX = "attachment:"
@@ -35,11 +35,20 @@ class AttachmentData:
     mime_type: str
     description: str
     timestamp: float
-    url: Optional[str] = None
+    url: str | None = None
 
 
 class AttachmentStore(ABC):
-    """Abstract base class for attachment stores."""
+    """Abstract base class for attachment stores.
+
+    ``shared`` says whether a second process can read what this store wrote. It is False by
+    default because the safe answer for a bring-your-own store is the conservative one: a driver
+    that keeps attachments in this process (or inside the session copy this process holds) cannot
+    serve a topology where the request is offloaded at one tier and resolved at another. Only a
+    store backed by an external service sets it True.
+    """
+
+    shared: ClassVar[bool] = False
 
     @abstractmethod
     def save(self, attachment: dict, max_attachments: int) -> str:
@@ -52,7 +61,7 @@ class AttachmentStore(ABC):
         pass
 
     @abstractmethod
-    def get(self, attachment_id: str) -> Optional[dict]:
+    def get(self, attachment_id: str) -> dict | None:
         """
         Retrieve full attachment data by ID.
         :param attachment_id: Attachment ID

@@ -2,8 +2,11 @@ import json
 
 import pytest
 
+from agentkernel.core.config import _ExecutionConfig
 from agentkernel.core.model import ExecutionMode
-from agentkernel.pipeline.envelope import QueueMessage
+from agentkernel.core.util.factory import AKConfigError
+from agentkernel.integration.adapter.base import OutboundAdapter
+from agentkernel.pipeline.envelope import ATTR_INTEGRATION, QueueMessage
 from agentkernel.pipeline.response_handler import ResponseHandler
 from agentkernel.pipeline.response_store.in_memory import InMemoryResponseStore
 from agentkernel.pipeline.transport.in_memory import InMemoryTransport
@@ -19,14 +22,11 @@ def _reset_state():
     InMemoryResponseStore.reset()
 
 
-def _use_mode(monkeypatch, mode, output_max_receive_count=3):
+def _use_mode(monkeypatch, mode, message_type=None, output_max_receive_count=3):
     class _Cfg:
-        class execution:
-            class queues:
-                class output:
-                    max_receive_count = output_max_receive_count
+        execution = _ExecutionConfig(mode=mode, message_type=message_type)
 
-    _Cfg.execution.mode = mode
+    _Cfg.execution.queues.output.max_receive_count = output_max_receive_count
     monkeypatch.setattr("agentkernel.core.config.AKConfig.get", classmethod(lambda cls: _Cfg))
 
 
@@ -49,6 +49,25 @@ def _ws_handler():
     store = InMemoryResponseStore()
     ws = _FakeWSHandler()
     return ResponseHandler(transport=InMemoryTransport(), response_store=store, ws_handler=ws), store, ws
+
+
+class _FakeOutboundAdapter(OutboundAdapter):
+    """Records what the Response Handler asked it to send."""
+
+    name = "byo_pkg.FakeOutboundAdapter"
+
+    def __init__(self):
+        self.delivered = []
+        self.errors = []
+        self.fail_with = None
+
+    async def deliver(self, reply, reply_context):
+        if self.fail_with:
+            raise self.fail_with
+        self.delivered.append((str(reply), dict(reply_context)))
+
+    async def deliver_error(self, message, reply_context):
+        self.errors.append((message, dict(reply_context)))
 
 
 def _output_msg(body, attributes=None, group_id="s1"):
@@ -94,20 +113,38 @@ class TestRestDelivery:
         assert record["body"]["session_id"] == "s1"
 
 
-class TestStreamDelivery:
-    def test_local_chunks_reach_the_store_stream(self, monkeypatch):
-        _use_mode(monkeypatch, ExecutionMode.STREAM)
-        handler, store = _handler()
-        handler.process(_output_msg({"delta": "he", "session_id": "s1"}, attributes={"request_id": "r1"}))
-        handler.process(_output_msg({"done": True, "session_id": "s1"}, attributes={"request_id": "r1"}))
+class TestSSEDelivery:
+    """rest_sync + delta: every chunk goes to the chunk store for the SSE generator."""
+
+    @pytest.mark.parametrize("attributes", [{"request_id": "r1"}, {"request_id": "r1", "user_id": "u1"}])
+    def test_chunks_reach_the_store_stream_with_or_without_user_id(self, monkeypatch, attributes):
+        _use_mode(monkeypatch, ExecutionMode.REST_SYNC, "delta")
+        handler, store, ws = _ws_handler()
+        handler.process(_output_msg({"delta": "he", "session_id": "s1"}, attributes=attributes))
+        handler.process(_output_msg({"done": True, "session_id": "s1"}, attributes=attributes))
 
         chunks = list(store.stream("r1", chunk_timeout=0.5))
         assert chunks == [{"delta": "he", "session_id": "s1"}, {"done": True, "session_id": "s1"}]
+        assert ws.broadcasts == []
 
-    def test_ws_entered_chunks_broadcast_over_websocket(self, monkeypatch):
-        """The USER_ID attribute (stamped only by the gateway) marks a WS-entered request: its
-        chunks are pushed, never routed into the SSE chunk store."""
-        _use_mode(monkeypatch, ExecutionMode.STREAM)
+    @pytest.mark.parametrize("attributes", [{"request_id": "r1"}, {"request_id": "r1", "user_id": "u1"}])
+    def test_permanent_failure_emits_error_chunk(self, monkeypatch, attributes):
+        _use_mode(monkeypatch, ExecutionMode.REST_SYNC, "delta")
+        handler, store, ws = _ws_handler()
+        handler.on_permanent_failure(_output_msg({"delta": "x"}, attributes=attributes))
+
+        [chunk] = list(store.stream("r1", chunk_timeout=0.5))
+        assert chunk["done"] is True
+        assert "after 3 retries" in chunk["error"]
+        assert chunk["session_id"] == "s1"
+        assert ws.broadcasts == []
+
+
+class TestWebSocketDeltaDelivery:
+    """async + delta: every chunk is pushed as STREAM_CHUNK, never routed into the chunk store."""
+
+    def test_chunks_broadcast_over_websocket(self, monkeypatch):
+        _use_mode(monkeypatch, ExecutionMode.ASYNC, "delta")
         handler, store, ws = _ws_handler()
         handler.process(_output_msg({"delta": "x", "session_id": "s1"}, attributes={"request_id": "r1", "user_id": "u1"}))
 
@@ -118,8 +155,18 @@ class TestStreamDelivery:
         with pytest.raises(TimeoutError):  # nothing was routed into the SSE chunk store
             next(store.stream("r1", chunk_timeout=0.1))
 
-    def test_permanent_failure_of_a_ws_entered_chunk_broadcasts_the_error(self, monkeypatch):
-        _use_mode(monkeypatch, ExecutionMode.STREAM)
+    def test_a_chunk_without_user_id_raises_for_retry_instead_of_reaching_the_store(self, monkeypatch):
+        _use_mode(monkeypatch, ExecutionMode.ASYNC, "delta")
+        handler, store, ws = _ws_handler()
+        with pytest.raises(ValueError, match="user_id"):
+            handler.process(_output_msg({"delta": "x", "session_id": "s1"}, attributes={"request_id": "r1"}))
+
+        assert ws.broadcasts == []
+        with pytest.raises(TimeoutError):
+            next(store.stream("r1", chunk_timeout=0.1))
+
+    def test_permanent_failure_broadcasts_the_error_chunk(self, monkeypatch):
+        _use_mode(monkeypatch, ExecutionMode.ASYNC, "delta")
         handler, _, ws = _ws_handler()
         handler.on_permanent_failure(_output_msg({"delta": "x"}, attributes={"request_id": "r1", "user_id": "u1"}))
 
@@ -129,15 +176,14 @@ class TestStreamDelivery:
         assert "after 3 retries" in call["message"]["error"]
         assert call["message"]["session_id"] == "s1"
 
-    def test_permanent_failure_emits_error_chunk(self, monkeypatch):
-        _use_mode(monkeypatch, ExecutionMode.STREAM)
-        handler, store = _handler()
+    def test_permanent_failure_without_user_id_never_raises_or_stores(self, monkeypatch):
+        _use_mode(monkeypatch, ExecutionMode.ASYNC, "delta")
+        handler, store, ws = _ws_handler()
         handler.on_permanent_failure(_output_msg({"delta": "x"}, attributes={"request_id": "r1"}))
 
-        [chunk] = list(store.stream("r1", chunk_timeout=0.5))
-        assert chunk["done"] is True
-        assert "after 3 retries" in chunk["error"]
-        assert chunk["session_id"] == "s1"
+        assert ws.broadcasts == []
+        with pytest.raises(TimeoutError):
+            next(store.stream("r1", chunk_timeout=0.1))
 
 
 class TestAsyncDelivery:
@@ -173,3 +219,94 @@ class TestAsyncDelivery:
         handler, _, ws = _ws_handler()
         handler.on_permanent_failure(_output_msg({"result": "never"}, attributes={"request_id": "r1"}))
         assert ws.broadcasts == []
+
+
+class TestIntegrationDispatch:
+    """Messaging-integration replies are routed to their adapter (spec #524 §6)."""
+
+    NAME = "byo_pkg.FakeOutboundAdapter"
+
+    @pytest.fixture(autouse=True)
+    def _adapter(self, monkeypatch):
+        from agentkernel.integration.adapter.factory import IntegrationAdapterFactory
+
+        adapter = _FakeOutboundAdapter()
+        IntegrationAdapterFactory.reset()
+        IntegrationAdapterFactory._cache[self.NAME] = adapter
+        yield adapter
+        IntegrationAdapterFactory.reset()
+
+    def _message(self, body, status_code="200"):
+        return _output_msg(
+            body,
+            attributes={
+                "request_id": "r1",
+                "status_code": status_code,
+                ATTR_INTEGRATION: self.NAME,
+                "reply_channel": "C9",
+                "reply_thread_ts": "111.222",
+            },
+        )
+
+    @pytest.mark.parametrize(
+        "mode, message_type",
+        [
+            (None, None),
+            (ExecutionMode.REST_SYNC, None),
+            (ExecutionMode.REST_SYNC, "delta"),
+            (ExecutionMode.ASYNC, None),
+            (ExecutionMode.ASYNC, "delta"),
+        ],
+    )
+    def test_the_integration_branch_precedes_the_mode_branch(self, monkeypatch, _adapter, mode, message_type):
+        # A platform reply goes to the platform whatever the app's execution mode is; without
+        # this ordering an ASYNC app would try to push a Slack reply over a WebSocket.
+        _use_mode(monkeypatch, mode, message_type)
+        handler, _ = _handler()
+        handler.process(self._message({"result": "agent says hi", "session_id": "s1"}))
+        assert _adapter.delivered == [("agent says hi", {"channel": "C9", "thread_ts": "111.222"})]
+
+    def test_nothing_is_written_to_the_response_store(self, monkeypatch, _adapter):
+        _use_mode(monkeypatch, ExecutionMode.REST_SYNC)
+        handler, store = _handler()
+        handler.process(self._message({"result": "hi", "session_id": "s1"}))
+        assert store.get_record("r1") is None
+
+    def test_a_failed_run_delivers_an_error_not_the_raw_exception(self, monkeypatch, _adapter, caplog):
+        _use_mode(monkeypatch, ExecutionMode.REST_SYNC)
+        handler, _ = _handler()
+        with caplog.at_level("ERROR"):
+            handler.process(self._message({"error": "KeyError: 'openai_api_key'", "session_id": "s1"}, status_code="500"))
+        assert _adapter.delivered == []
+        [(message, context)] = _adapter.errors
+        assert message == _FakeOutboundAdapter.ERROR_MESSAGE
+        assert context == {"channel": "C9", "thread_ts": "111.222"}
+        assert "openai_api_key" in caplog.text, "the raw error belongs in the log, not in the reply"
+
+    def test_a_delivery_failure_propagates_for_retry(self, monkeypatch, _adapter):
+        _use_mode(monkeypatch, ExecutionMode.REST_SYNC)
+        _adapter.fail_with = RuntimeError("slack unreachable")
+        handler, _ = _handler()
+        # Raising is what buys the ConsumerLoop's retries and, eventually, on_permanent_failure.
+        with pytest.raises(RuntimeError):
+            handler.process(self._message({"result": "hi", "session_id": "s1"}))
+
+    def test_an_unresolvable_adapter_does_not_silently_drop_the_reply(self, monkeypatch):
+        _use_mode(monkeypatch, ExecutionMode.REST_SYNC)
+        handler, _ = _handler()
+        message = _output_msg({"result": "hi"}, attributes={"request_id": "r1", ATTR_INTEGRATION: "carrier-pigeon"})
+        with pytest.raises(AKConfigError):
+            handler.process(message)
+
+    def test_permanent_failure_tells_the_user_instead_of_going_silent(self, monkeypatch, _adapter):
+        _use_mode(monkeypatch, ExecutionMode.REST_SYNC)
+        handler, _ = _handler()
+        handler.on_permanent_failure(self._message({"result": "hi", "session_id": "s1"}))
+        assert _adapter.errors == [(_FakeOutboundAdapter.ERROR_MESSAGE, {"channel": "C9", "thread_ts": "111.222"})]
+
+    def test_a_message_without_the_attribute_takes_the_old_path(self, monkeypatch, _adapter):
+        _use_mode(monkeypatch, ExecutionMode.REST_SYNC)
+        handler, store = _handler()
+        handler.process(_output_msg({"result": "hi", "session_id": "s1"}))
+        assert _adapter.delivered == []
+        assert store.get_record("r1")["body"] == {"result": "hi", "session_id": "s1"}

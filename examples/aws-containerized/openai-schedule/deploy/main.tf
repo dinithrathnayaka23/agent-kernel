@@ -3,12 +3,10 @@
 # ---------------------------------------------------------------------------
 module "containerized_agents" {
   source  = "yaalalabs/ak-containerized/aws"
-  version = "0.9.1"
+  version = "0.9.5"
 
   providers            = { aws = aws, docker = docker }
-  product_alias        = var.product_alias
-  env_alias            = var.env_alias
-  module_name          = var.module_name
+  prefix               = var.prefix
   region               = var.region
   product_display_name = "OpenAI Agents - Scheduled Chats"
 
@@ -18,13 +16,15 @@ module "containerized_agents" {
   # ---- REST Service Configuration ----
   # Serves chat ingress (enqueue + poll) and the schedule management routes.
   rest_service = {
-    package_path          = "../dist-rest-service"
-    cpu                   = 256
-    memory                = 512
-    desired_count         = 1
-    container_port        = 8000
-    health_check_endpoint = "/health"
-    command               = ["python", "app_rest_service.py"]
+    alb_security_group_id         = var.alb_security_group_id
+    ecs_service_security_group_id = var.ecs_service_security_group_id
+    package_path                  = "../dist-rest-service"
+    cpu                           = 256
+    memory                        = 512
+    desired_count                 = 1
+    container_port                = 8000
+    health_check_endpoint         = "/health"
+    command                       = ["python", "app_rest_service.py"]
     environment_variables = {
       OPENAI_API_KEY = var.openai_api_key
     }
@@ -97,11 +97,12 @@ module "containerized_agents" {
   # ---- Agent Runner Configuration ----
   # Runs fired occurrences and hosts the create_schedule/update_schedule/delete_schedule tools.
   agent_runner = {
-    cpu           = 1024
-    memory        = 2048
-    desired_count = 1
-    package_path  = "../dist-agent-runner"
-    command       = ["python", "app_agent_runner.py"]
+    security_group_id = var.agent_runner_security_group_id
+    cpu               = 1024
+    memory            = 2048
+    desired_count     = 1
+    package_path      = "../dist-agent-runner"
+    command           = ["python", "app_agent_runner.py"]
     environment_variables = {
       OPENAI_API_KEY = var.openai_api_key
     }
@@ -118,7 +119,7 @@ module "containerized_agents" {
   }
 
   tags = {
-    Example     = "openai-schedule"
-    Environment = var.env_alias
+    Example    = "openai-schedule"
+    Deployment = var.prefix
   }
 }

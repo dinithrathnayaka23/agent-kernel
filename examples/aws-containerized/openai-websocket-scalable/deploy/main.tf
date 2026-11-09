@@ -1,13 +1,11 @@
 # OpenAI Agents in ECS over a WebSocket API with queue-based (scalable) processing — see ../README.md.
 module "containerized_agents" {
   source  = "yaalalabs/ak-containerized/aws"
-  version = "0.9.1"
+  version = "0.9.5"
 
   providers = { aws = aws, docker = docker }
 
-  product_alias        = var.product_alias
-  env_alias            = var.env_alias
-  module_name          = var.module_name
+  prefix               = var.prefix
   container_type       = "ecs"
   region               = var.region
   vpc_id               = var.vpc_id
@@ -27,7 +25,7 @@ module "containerized_agents" {
 
   # Queue mode + WebSocket
   queue_mode     = true
-  execution_mode = "async" # see ../../openai-stream-queue-mode for the "stream" (token-by-token) variant
+  execution_mode = "async" # see ../../openai-stream-queue-mode for the message_type = "delta" (token-by-token) variant
   ws_chat_route  = "chat"
 
   # Custom route beyond chat — registered via @AWSWebsocketAPI.register("echo"), answered directly (no queue).
@@ -70,7 +68,7 @@ module "containerized_agents" {
   enable_api_gateway_logs = false
 
   tags = {
-    Example     = "openai-websocket-scalable"
-    Environment = var.env_alias
+    Example    = "openai-websocket-scalable"
+    Deployment = var.prefix
   }
 }

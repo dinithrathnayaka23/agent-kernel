@@ -1,15 +1,20 @@
 """
 Conversation Thread Support as an integration-style handler.
 
-AgentThreadRequestHandler serves the standard chat routes with thread recording
-wrapped around the ChatService execution core, plus the thread read routes.
-Mount it instead of the default AgentRESTRequestHandler to enable threads:
+Two chat surfaces, one per execution topology, both mounted instead of the
+default chat handler — mounting is what enables threads, on either:
 
-    RESTAPI.run(handlers=[AgentThreadRequestHandler()])
+    RESTAPI.run(handlers=[AgentThreadRequestHandler()])           # direct, in-process
+    IOHandler.run(request_handler=ThreadRequestHandler())         # queue pipeline
+
+AgentThreadRequestHandler runs the agent inside its own route, so it brackets
+one call: pre_run -> execute -> post_run. ThreadRequestHandler cannot, because
+the agent runs on the far side of the input queue: it records the user message
+before enqueueing and marks the message, and AgentRunner records the reply.
+Both serve the thread read routes.
 """
 
 import logging
-from typing import List, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
@@ -17,9 +22,12 @@ from fastapi.responses import StreamingResponse
 from ...api.handler import AgentRESTRequestHandler, AuthorisedRESTRequestHandler
 from ...auth.authoriser import Authoriser
 from ...core import Config
-from ...core.chat_service import RequestBuilder, ResponseBuilder
-from ...core.model import BaseChatRequest, BaseRunRequest, ExecutionMode, StreamChunk
+from ...core.chat_service import ChatService, RequestBuilder, ResponseBuilder
+from ...core.model import BaseChatRequest, BaseRunRequest, StreamChunk
 from ...core.service import AgentService
+from ...pipeline.envelope import ATTR_THREAD
+from ...pipeline.producer import RequestProducer
+from ...pipeline.request_handler import RequestHandler
 from .manager import ConversationThreadManager
 from .recorder import ThreadRecorder
 
@@ -34,13 +42,13 @@ class AgentThreadRequestHandler(AgentRESTRequestHandler):
 
     Endpoints:
     - GET /api/v1/agents: List available agents
-    - POST /api/v1/chat: Run an agent with thread recording (SSE when execution.mode=stream)
+    - POST /api/v1/chat: Run an agent with thread recording (SSE when execution.message_type is delta)
     - POST /api/v1/chat-multipart: Same as /api/v1/chat with multipart file/image uploads
     - GET /api/v1/threads: List threads (see ThreadRESTRequestHandler)
     - GET /api/v1/threads/{session_id}: Get a thread with message history
     """
 
-    def __init__(self, authoriser: Optional[Authoriser] = None):
+    def __init__(self, authoriser: Authoriser | None = None):
         """
         Initializes an AgentThreadRequestHandler instance. Fails fast when
         Conversation Thread Support is not configured.
@@ -66,7 +74,7 @@ class AgentThreadRequestHandler(AgentRESTRequestHandler):
         return router
 
     async def run(self, body: BaseRunRequest):
-        if Config.get().execution.mode == ExecutionMode.STREAM:
+        if Config.get().execution.is_sse:
             try:
                 gen = await self._stream_with_recording(body)
                 return StreamingResponse(gen, media_type="text/event-stream")
@@ -79,13 +87,13 @@ class AgentThreadRequestHandler(AgentRESTRequestHandler):
     async def run_multipart(
         self,
         prompt: str = Form(...),
-        agent: Optional[str] = Form(None),
-        session_id: Optional[str] = Form(None),
-        user_id: Optional[str] = Form(None),
-        group_id: Optional[str] = Form(None),
-        thread_name: Optional[str] = Form(None),
-        files: Optional[List[UploadFile]] = File(None),
-        images: Optional[List[UploadFile]] = File(None),
+        agent: str | None = Form(None),
+        session_id: str | None = Form(None),
+        user_id: str | None = Form(None),
+        group_id: str | None = Form(None),
+        thread_name: str | None = Form(None),
+        files: list[UploadFile] | None = File(None),
+        images: list[UploadFile] | None = File(None),
     ):
         req = AgentRESTRequestHandler.BaseMultimodalRunRequest(
             prompt=prompt,
@@ -97,7 +105,7 @@ class AgentThreadRequestHandler(AgentRESTRequestHandler):
             files=files,
             images=images,
         )
-        if Config.get().execution.mode == ExecutionMode.STREAM:
+        if Config.get().execution.is_sse:
             try:
                 gen = await self._stream_with_recording(req)
                 return StreamingResponse(gen, media_type="text/event-stream")
@@ -125,7 +133,7 @@ class AgentThreadRequestHandler(AgentRESTRequestHandler):
             requests, _ = self._recorder.pre_run(req, requests)
             result, session_id = await self.chat_service.execute(req, requests=requests)
             self._recorder.post_run(req, result)
-            return ResponseBuilder.build_response(200, session_id, True, result=result)
+            return ResponseBuilder.build_response(ChatService.success_status(req, result), session_id, True, result=result)
         except ValueError as ve:
             self._log.error(f"ValueError processing request: {ve}")
             return ResponseBuilder.build_response(400, req.session_id, True, error=ve)
@@ -156,7 +164,7 @@ class AgentThreadRequestHandler(AgentRESTRequestHandler):
         recorder = self._recorder
 
         async def _stream():
-            deltas: List[str] = []
+            deltas: list[str] = []
             error_seen = False
             try:
                 async for chunk in chunks:
@@ -174,7 +182,7 @@ class AgentThreadRequestHandler(AgentRESTRequestHandler):
         return _stream()
 
     @staticmethod
-    async def _acknowledgement_frames(chunks, session_id: Optional[str]):
+    async def _acknowledgement_frames(chunks, session_id: str | None):
         """Frame a deferred request's acknowledgement chunk as SSE, without any recording.
 
         :param chunks: The single-chunk stream returned by the ChatService for a deferred request
@@ -189,15 +197,16 @@ class AgentThreadRequestHandler(AgentRESTRequestHandler):
         """Validate the request envelope before any thread write.
 
         :param req: The chat request to validate
-        :raises ValueError: If session_id or prompt is missing
+        :raises ValueError: If session_id is missing, or the request carries neither a prompt nor
+            a resume block
         """
         if not req.session_id:
             raise ValueError("No session_id is provided in the request")
-        if not req.prompt:
+        if not req.prompt and req.resume is None:
             raise ValueError("No prompt provided in the request")
 
     @staticmethod
-    def _check_agent_available(name: Optional[str]) -> None:
+    def _check_agent_available(name: str | None) -> None:
         """Agent-availability precheck before any thread write, keeping a missing agent
         from leaving a phantom thread with an unanswered user message. The rule itself is
         shared with the other commit-before-running surfaces (AgentService.ensure_agent_available).
@@ -206,6 +215,97 @@ class AgentThreadRequestHandler(AgentRESTRequestHandler):
         :raises ValueError: If no matching agent is available
         """
         AgentService.ensure_agent_available(name)
+
+
+class ThreadRequestHandler(RequestHandler):
+    """
+    Pipeline chat handler with Conversation Thread Support: the queue-mode
+    counterpart of AgentThreadRequestHandler. Mount it in place of the pipeline's
+    own RequestHandler, which it extends, so the chat route stays a single route:
+
+        IOHandler.run(request_handler=ThreadRequestHandler())
+
+    The recording is split across the queue because the run is: the user message,
+    the thread itself and the attachment offload happen here, before anything is
+    enqueued, and AgentRunner appends the assistant message on the other side (it
+    is the only process holding the reply). The `thread` message attribute carries
+    that intent across, so a request enqueued by any other producer grows no thread.
+
+    Endpoints: the inherited pipeline chat/agents/poll routes, plus the thread read
+    routes (see ThreadRESTRequestHandler).
+    """
+
+    def __init__(self, authoriser: Authoriser | None = None):
+        """
+        :param authoriser: Optional user-supplied Authoriser protecting the thread read routes.
+        :raises ValueError: If no 'thread' block is present in the configuration.
+        """
+        super().__init__()
+        self._log = logging.getLogger("ak.integration.thread.pipeline")
+        manager = ConversationThreadManager.get()
+        if manager is None:
+            raise ValueError("Conversation Thread Support is not configured. Add a 'thread' block to config.yaml")
+        self._recorder = ThreadRecorder(manager)
+        self._read_handler = ThreadRESTRequestHandler(authoriser=authoriser)
+
+    def get_router(self) -> APIRouter:
+        """The inherited pipeline chat routes plus the thread read routes."""
+        router = super().get_router()
+        router.include_router(self._read_handler.get_router())
+        return router
+
+    def _enqueue_request(self, body: BaseRunRequest, request_id: str):
+        """Enqueue, marking the message for reply recording unless the request was deferred.
+
+        A `schedule` block registers a task instead of running it, so there is no exchange to
+        record — and the 202 acknowledgement must never be appended to a thread as if the agent
+        had said it. Its occurrences reach the queue from the schedule provider, which stamps no
+        thread marker, so they are not recorded either.
+        """
+        attributes = {} if body.schedule is not None else {ATTR_THREAD: "1"}
+        return RequestProducer(self.get_transport()).enqueue(body, request_id, attributes=attributes)
+
+    async def run_chat(self, body: BaseRunRequest):
+        """POST /api/v1/chat: record the user message, then enqueue as the pipeline normally does.
+
+        Every rejection the inherited route can raise runs before the recording: the two
+        validation messages here, and the mode/response-store checks in ``_reject_unroutable``.
+        A 400 raised after ``_record_user_message`` would leave a thread holding a user message
+        no reply ever answers.
+        """
+        if not body.session_id:
+            raise HTTPException(status_code=400, detail={"error": "No session_id is provided in the request"})
+        if not body.prompt and body.resume is None:
+            raise HTTPException(status_code=400, detail={"error": "No prompt provided in the request", "session_id": body.session_id})
+        self._reject_unroutable(body)
+        if body.schedule is None:
+            await self._record_user_message(body)
+        return await super().run_chat(body)
+
+    async def _record_user_message(self, body: BaseRunRequest) -> None:
+        """Do the pre-run thread work at the edge and rewrite the body for the queue.
+
+        The rebuilt request list replaces `files`/`images` on the body: `pre_run` has already
+        stored the bytes and swapped in AgentRequestAttachmentRef entries, so leaving the
+        originals on the body would send every attachment through the broker a second time
+        (where a real broker's message-size limit is waiting), for a field the runner ignores
+        once `requests` is set.
+
+        :param body: The chat request, mutated in place into its queue-ready form.
+        :raises HTTPException: 400 when the agent is unavailable, `user_id` is missing, or the
+            attachment configuration rejects the request — all of them before any thread write,
+            so an unanswerable request leaves no phantom thread behind.
+        """
+        try:
+            AgentService.ensure_agent_available(body.agent)
+            requests = await RequestBuilder.from_base_request_async(body)
+            requests, _ = self._recorder.pre_run(body, requests)
+        except ValueError as e:
+            self._log.error(f"Rejected before recording: {e}")
+            raise HTTPException(status_code=400, detail={"error": str(e), "session_id": body.session_id})
+        body.requests = requests
+        body.files = None
+        body.images = None
 
 
 class ThreadRESTRequestHandler(AuthorisedRESTRequestHandler):
@@ -222,7 +322,7 @@ class ThreadRESTRequestHandler(AuthorisedRESTRequestHandler):
     ownership. Without an Authoriser, routes are open.
     """
 
-    def __init__(self, authoriser: Optional[Authoriser] = None):
+    def __init__(self, authoriser: Authoriser | None = None):
         """
         Initializes a ThreadRESTRequestHandler instance.
         :param authoriser: Optional user-supplied Authoriser protecting the thread routes.
@@ -239,10 +339,10 @@ class ThreadRESTRequestHandler(AuthorisedRESTRequestHandler):
         @router.get("/api/v1/threads")
         def list_threads(
             request: Request,
-            user_id: Optional[str] = None,
-            group_id: Optional[str] = None,
-            limit: Optional[int] = None,
-            cursor: Optional[str] = None,
+            user_id: str | None = None,
+            group_id: str | None = None,
+            limit: int | None = None,
+            cursor: str | None = None,
         ):
             manager = ConversationThreadManager.get()
             if manager is None:
@@ -260,7 +360,7 @@ class ThreadRESTRequestHandler(AuthorisedRESTRequestHandler):
             }
 
         @router.get("/api/v1/threads/{session_id}")
-        def get_thread(session_id: str, request: Request, limit: Optional[int] = None, cursor: Optional[str] = None):
+        def get_thread(session_id: str, request: Request, limit: int | None = None, cursor: str | None = None):
             manager = ConversationThreadManager.get()
             if manager is None:
                 raise HTTPException(status_code=404, detail="Thread support is not enabled")
@@ -276,7 +376,7 @@ class ThreadRESTRequestHandler(AuthorisedRESTRequestHandler):
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
             body = thread.model_dump(mode="json", exclude={"messages"})
-            body["messages"] = [message.model_dump(mode="json") for message in page.messages]
+            body["messages"] = [message.to_wire() for message in page.messages]
             body["next_cursor"] = page.next_cursor
             return body
 

@@ -62,7 +62,7 @@ These skills are bundled with the `agentkernel` PyPI package and help you build 
 
 ### ak-init
 
-Interactively scaffold a new Agent Kernel project. Covers all supported frameworks (OpenAI Agents SDK, CrewAI, LangGraph, Google ADK, Smolagents) and all deployment modes (CLI, REST API, AWS Lambda, Azure Functions, containerized).
+Interactively scaffold a new Agent Kernel project. Covers all supported frameworks (OpenAI Agents SDK, CrewAI, LangGraph, Google ADK, Smolagents, Pydantic AI, Claude Agent SDK) and all deployment modes (CLI, REST API, AWS Lambda, Azure Functions, containerized).
 
 **Example prompts:**
 - *"Create a new agent project using CrewAI for AWS Lambda"*
@@ -97,7 +97,7 @@ Deploy your agent to AWS, Azure, GCP, or any Kubernetes cluster. Generates compl
 
 ### ak-add-capabilities
 
-Add advanced capabilities: guardrails (OpenAI Moderation, AWS Bedrock), tracing (Langfuse, OpenLLMetry, Logfire), session persistence (Redis, DynamoDB, Cosmos DB, Firestore), knowledge base tools (ChromaDB, Neo4j, Starburst, and custom adapters), MCP server, A2A server, AG-UI server, custom hooks, multimodal support, conversation thread support (in-memory, Redis, Valkey, DynamoDB, Firestore, Cosmos DB), sandbox code execution, and scheduling (deferred/recurring chat execution, agent-facing scheduling tools).
+Add advanced capabilities: guardrails (OpenAI Moderation, AWS Bedrock, CloudWatch), tracing (Langfuse, OpenLLMetry, Logfire), session persistence (Redis, DynamoDB, Cosmos DB, Firestore), knowledge base tools (ChromaDB, Neo4j, Starburst, Open Knowledge Format bundles, and custom adapters), MCP server, A2A server, AG-UI server, custom hooks, multimodal support, conversation thread support (in-memory, Redis, Valkey, DynamoDB, Firestore, Cosmos DB), sandbox code execution (per-profile language and package-install permissions), scheduling (deferred/recurring chat execution, agent-facing scheduling tools), and human-in-the-loop (pausing a run for a person's approval or answer, and resuming from their decision).
 
 **Example prompts:**
 - *"Add OpenAI guardrails to my agent"*
@@ -114,29 +114,30 @@ Set up testing and debug common issues. Covers test modes (score, llm, fallback)
 
 ## Developer Skills: Accelerating Contributions with AI
 
-Agent Kernel doesn't just expose its capabilities as skills for users; it also exposes its internals as skills for contributors. The `.agents/skills/` folder at the repository root contains seventeen developer skills that teach coding assistants how to work on the Agent Kernel codebase itself.
+Agent Kernel doesn't just expose its capabilities as skills for users; it also exposes its internals as skills for contributors. The `.agents/skills/` folder at the repository root contains eighteen developer skills that teach coding assistants how to work on the Agent Kernel codebase itself.
 
 When a contributor opens the repository in a coding assistant (Copilot, Claude Code, Cursor, etc.), these skills are automatically discovered. The assistant immediately understands the architecture, adapter patterns, testing conventions, and code quality standards, eliminating the onboarding curve for new contributors.
 
 | Skill | What It Teaches Your Coding Assistant |
 |---|---|
-| `ak-dev-architecture` | Core abstractions (`Session`, `Agent`, `Runner`, `Module`, `Runtime`, `AgentService`, `ChatService`), design principles, the house patterns every new feature follows (pluggable by default, reuse of existing configuration over new knobs, classes over script-style functions), adapter pattern, execution flow, the unified queue execution pipeline (`agentkernel.pipeline`: `QueueMessage`/`QueueTransport`/`ConsumerLoop`, the `in_memory` transport, `AgentRunner`/`ResponseHandler`/`RequestHandler`/`IOHandler`, the `RESTAPI.run` delegation rule, and the relocation shims), and the AWS ECS containerized deployment classes (`ECSIOHandler`, `ECSOutputConsumer`, `ECSAgentRunner`, `ECSStreamAgentRunner`, `ECSSQSConsumer`, `RawQueueConsumer`, `ThreadRunner`), everything needed to understand the codebase |
-| `ak-dev-new-framework-integration` | Step-by-step guide to add a new agent framework adapter (beyond OpenAI, CrewAI, LangGraph, Google ADK, Smolagents): subclass creation, dependency wiring, exports, tests |
-| `ak-dev-new-messaging-integration` | How to add a new messaging platform integration (beyond Slack, WhatsApp, Messenger, Instagram, Telegram, Teams, Gmail): handler class, webhook routes, message parsing, config |
-| `ak-dev-new-knowledgebase-integration` | How to add a new knowledge base backend (beyond ChromaDB, Neo4j, Starburst): implement `KnowledgeBase`, wire dependencies, add tests/docs/examples |
+| `ak-dev-architecture` | Core abstractions (`Session`, `Agent`, `Runner`, `Module`, `Runtime`, `AgentService`, `ChatService`), design principles, the house patterns every new feature follows (pluggable by default, reuse of existing configuration over new knobs, classes over script-style functions), adapter pattern, messaging integrations (the `integration/adapter` seam: `InboundAdapter`/`OutboundAdapter`, `WebhookRESTRequestHandler`, `PollerRunner`), execution flow, the unified queue execution pipeline (`agentkernel.pipeline`: `QueueMessage`/`QueueTransport`/`ConsumerLoop`, the `in_memory` transport, `RequestProducer`, `AgentRunner`/`ResponseHandler`/`RequestHandler`/`IOHandler`, the `RESTAPI.run` delegation rule, and the relocation shims), and the AWS ECS containerized deployment classes (`ECSIOHandler`, `ECSOutputConsumer`, `ECSAgentRunner`, `ECSStreamAgentRunner`, `ECSSQSConsumer`, `RawQueueConsumer`, `ThreadRunner`), everything needed to understand the codebase |
+| `ak-dev-new-framework-integration` | Step-by-step guide to add a new agent framework adapter (beyond OpenAI, CrewAI, LangGraph, Google ADK, Smolagents, Pydantic AI, Claude Agent SDK): subclass creation, dependency wiring, exports, tests |
+| `ak-dev-new-messaging-integration` | How to add a new messaging platform integration (beyond Slack, WhatsApp, Messenger, Instagram, Telegram, Teams, Gmail): writing the `InboundAdapter`/`OutboundAdapter` pair, hosting it (`WebhookRESTRequestHandler` or `PollerRunner`), webhook verification, attachments, configuration, and examples |
+| `ak-dev-new-knowledgebase-integration` | How to add a new knowledge base backend (beyond ChromaDB, Neo4j, Starburst, Open Knowledge Format): declare capabilities, implement the matching `KnowledgeBase` operations, reuse `DocumentStore` for document-shaped backends, wire dependencies, add contract tests/docs/examples |
 | `ak-dev-new-guardrail-provider` | How to add a new content safety provider (beyond OpenAI, Bedrock, Walled AI): input/output guardrails, factory registration, configuration |
-| `ak-dev-new-tracing-provider` | How to add a new observability backend (beyond Langfuse, OpenLLMetry, Logfire): `BaseTrace` interface, traced runners, factory wiring |
+| `ak-dev-new-tracing-provider` | How to add a new observability backend (beyond Langfuse, OpenLLMetry, Logfire, CloudWatch): `BaseTrace` interface, traced runners, factory wiring |
 | `ak-dev-new-multimodal-storage` | How to add a new multimodal attachment storage backend (beyond in-memory, Redis, DynamoDB): storage interface, config wiring, tests, and docs |
-| `ak-dev-new-sandbox-provider` | How to add a new sandbox code-execution backend (beyond `local_subprocess`, `docker`, `kubernetes`, `e2b`, `daytona`, `ec2_ssm`): implement the `Sandbox`/`SandboxProvider` ABCs, declare capabilities honestly, factory registration, config block, contract tests |
+| `ak-dev-new-sandbox-provider` | How to add a new sandbox code-execution backend (beyond `local_subprocess`, `docker`, `kubernetes`, `e2b`, `daytona`, `ec2_ssm`): implement the `Sandbox`/`SandboxProvider` ABCs, declare capabilities honestly (including `install_packages` and language support), factory registration, config block, contract tests |
 | `ak-dev-new-queue-transport` | How to add a new queue transport to the execution pipeline (beyond `in_memory`, SQS, Kafka, NATS JetStream): the queue-semantics contract, `QueueTransport`/`TransportConsumer` implementation, factory registration, config and extras, the `QueueTransportContract` suite (fake and live-broker), the transport example, and Helm chart wiring |
-| `ak-dev-new-evaluator-provider` | How to add a new built-in test evaluator provider (beyond DeepEval): implement `AKEvaluator`'s `evaluate_by_score`/`evaluate_by_llm`, factory registration, optional dependency extras, tests |
+| `ak-dev-new-evaluator-provider` | How to add a new built-in test evaluator provider (beyond DeepEval, Opik and JEV): implement `AKEvaluator`'s `evaluate_by_score`/`evaluate_by_llm`, factory registration, optional dependency extras, tests |
+| `ak-dev-new-secret-provider` | How to add a new built-in secret provider (beyond `env`, `aws_ssm` and `kubernetes`): the `SecretProvider` contract (provider owns addressing, `None` on miss, `SecretError` on failure, no caching), factory registration behind `require_extra`, config reuse of `secret.prefix`, the `SecretProviderContract` suite, and Terraform grant wiring |
 | `ak-dev-sync-skills-from-branch` | How to inspect branch commits plus uncommitted changes, then add/update/remove developer and user skills so the skill trees stay aligned with the implemented capability set |
 | `ak-dev-sync-docs-from-branch` | How to inspect branch commits plus uncommitted changes, then update root docs, package docs, website docs, deployment READMEs, and example READMEs so documentation matches the implemented behavior |
 | `ak-dev-sync-skills-and-docs-from-commit` | How to process a specific commit hash (typically merged to develop), update dev/user skills and documentation based on that commit delta, and support automation PR flows with loop prevention |
 | `ak-dev-write-spec` | How to spec a planned change under `docs/specs/<issue-number>-<short-title>/` in three ordered stages: a concise point-form design spec (`design.md`) reviewed first, then a detailed implementation spec (`spec.md`), then a concise iteration-by-iteration plan (`plan.md`) the PR review checks the code against — plus an optional `research/` subfolder preserving the supporting investigation the design cites |
 | `ak-dev-review-pr` | Given a PR number or URL, fetch it with the GitHub CLI, review the delta against the architecture/code-quality/testing skills, dedupe findings, and post a single batched review with inline comments |
 | `ak-dev-testing-conventions` | Pytest patterns, async testing, mocking external services, pluggable `AKEvaluator` test backends, CI/CD test workflows |
-| `ak-dev-code-quality` | Formatting with `black`/`isort`, Python style rules (classes over script-style functions, configuration-field rules), commit conventions, PR checklist, review workflow |
+| `ak-dev-code-quality` | Formatting with `black`/`isort`, ruff typing rules, Python style rules (classes over script-style functions, configuration-field rules), commit conventions, PR checklist, review workflow |
 
 ### How Contributors Benefit
 
@@ -177,6 +178,14 @@ The [`waste-sorting-assistant`](https://github.com/yaalalabs/agent-kernel/tree/d
 - OpenAI Agents SDK agent with custom tools
 - Agent Kernel session memory for region-specific rules
 - AWS Lambda deployment with DynamoDB-backed session persistence
+
+**Example: Mathru — Maternal Health Companion**
+
+The [`mathru-phm-companion`](https://github.com/yaalalabs/agent-kernel/tree/develop/use-cases/mathru-phm-companion) is a WhatsApp agent that helps expectant mothers track clinic schedules and report symptoms, and helps their assigned Public Health Midwife triage escalations. It demonstrates:
+- Multi-agent handoffs via the OpenAI Agents module, with role-based routing
+- WhatsApp integration as the sole user interface, with session memory keyed on the sender's phone number
+- Input/output guardrails for content safety
+- A SQLite-backed store for registrations and escalations
 
 See [`use-cases/README.md`](https://github.com/yaalalabs/agent-kernel/tree/develop/use-cases/README.md) for the full workflow to build your own agent from a spec file.
 

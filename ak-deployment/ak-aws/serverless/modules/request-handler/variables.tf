@@ -3,25 +3,15 @@ variable "region" {
   description = "Region"
 }
 
-variable "product_alias" {
+variable "prefix" {
   type        = string
-  description = "Product alias"
-}
-
-variable "env_alias" {
-  type        = string
-  description = "Environment alias"
+  description = "Prefix applied to every resource name (e.g. \"myproduct-dev-agents\")"
 }
 
 variable "module_type" {
   type        = string
   description = "Module type"
   default     = "python"
-}
-
-variable "module_name" {
-  type        = string
-  description = "Module name"
 }
 
 variable "is_production" {
@@ -268,6 +258,12 @@ variable "input_queue_url" {
   default     = null
 }
 
+variable "output_queue_url" {
+  type        = string
+  description = "URL of the output SQS queue. The request handler never sends to it, but a WebhookRESTRequestHandler builds the pipeline SQS transport, which requires both queue URLs"
+  default     = null
+}
+
 variable "redis_url" {
   type        = string
   description = "URL of the Redis cluster"
@@ -341,4 +337,10 @@ variable "websocket_connections_dynamodb" {
     table_arn  = string
   })
   default = null
+}
+
+variable "ssm_enabled" {
+  type        = bool
+  description = "Whether this tier's role may read /ak/<prefix>/* from SSM Parameter Store and receive AK_SECRET__PREFIX"
+  default     = false
 }

@@ -1,8 +1,11 @@
 """Key-value store for storing serializable data."""
 
-from typing import Any, Dict, Optional
+import logging
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+
+_log = logging.getLogger("ak.core.key_value_cache")
 
 
 class KeyValueCache(BaseModel):
@@ -24,7 +27,7 @@ class KeyValueCache(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    data: Dict[str, Any] = Field(default_factory=dict, description="Internal storage dictionary")
+    data: dict[str, Any] = Field(default_factory=dict, description="Internal storage dictionary")
 
     def set(self, key: str, value: Any) -> None:
         """Store a value with the given key.
@@ -36,14 +39,16 @@ class KeyValueCache(BaseModel):
         if not key:
             raise ValueError("Key cannot be empty or None")
         self.data[key] = value
+        _log.debug(f"Set key {key}: {type(value).__name__}")
 
-    def get(self, key: str, default: Optional[Any] = None) -> Any:
+    def get(self, key: str, default: Any | None = None) -> Any:
         """Retrieve a value by key.
 
         :param key: The key to retrieve the value for
         :param default: The default value to return if key is not found
         :return: The stored value, or the default if the key doesn't exist
         """
+        _log.debug(f"Get key {key}: found={key in self.data}")
         return self.data.get(key, default)
 
     def delete(self, key: str) -> bool:
@@ -54,7 +59,9 @@ class KeyValueCache(BaseModel):
         """
         if key in self.data:
             del self.data[key]
+            _log.debug(f"Deleted key {key}")
             return True
+        _log.debug(f"Delete skipped, key {key} not found")
         return False
 
     def has(self, key: str) -> bool:
@@ -68,6 +75,7 @@ class KeyValueCache(BaseModel):
     def clear(self) -> None:
         """Clear all data from the store."""
         self.data.clear()
+        _log.debug("Cleared all keys")
 
     def keys(self) -> list[str]:
         """Get all keys in the store.
@@ -90,12 +98,13 @@ class KeyValueCache(BaseModel):
         """
         return list(self.data.items())
 
-    def update(self, other: Dict[str, Any]) -> None:
+    def update(self, other: dict[str, Any]) -> None:
         """Update the store with key-value pairs from a dictionary.
 
         :param other: A dictionary of key-value pairs to add/update
         """
         self.data.update(other)
+        _log.debug(f"Updated keys: {list(other)}")
 
     def __len__(self) -> int:
         """Return the number of items in the store."""
@@ -107,7 +116,9 @@ class KeyValueCache(BaseModel):
 
     def __getitem__(self, key: str) -> Any:
         """Get a value using dictionary-style access."""
-        return self.data[key]
+        value = self.data[key]
+        _log.debug(f"Get key {key}: found=True")
+        return value
 
     def __setitem__(self, key: str, value: Any) -> None:
         """Set a value using dictionary-style access."""
@@ -118,3 +129,4 @@ class KeyValueCache(BaseModel):
         if key not in self.data:
             raise KeyError(key)
         del self.data[key]
+        _log.debug(f"Deleted key {key}")

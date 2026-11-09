@@ -2,17 +2,25 @@ import asyncio
 import contextlib
 import contextvars
 import copy
+import inspect
 import logging
 import pickle
 from abc import ABC, abstractmethod
-from collections.abc import AsyncGenerator, Iterator, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Iterator, Mapping
 from enum import Enum
-from typing import Any, ClassVar, Self, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Self, cast
 
 from .event import StreamEvent
 from .hooks import PostHook, PreHook
-from .model import AgentReply, AgentRequest
+from .model import AgentReply, AgentRequest, ResumeDecision
 from .util.key_value_cache import KeyValueCache
+from .util.picklable import first_unpicklable_entry
+
+if TYPE_CHECKING:
+    from .paused_run import PausedRun
+
+if TYPE_CHECKING:  # pragma: no cover: typing only; avoids a base <-> realtime import cycle
+    from .realtime import RealtimeRunner
 
 _log = logging.getLogger("ak.core.runner")
 
@@ -62,7 +70,6 @@ class Session:
         Initializes a Session instance.
         :param id: Unique identifier for the session.
         """
-        self._log: logging.Logger = logging.getLogger(f"ak.core.session [{id}]")
         self._id: str = id
         self._data: dict[str, Any] = {}
         self._lock: asyncio.Lock = asyncio.Lock()
@@ -136,9 +143,7 @@ class Session:
         :return: The matching session object associated with the key, or None
         if there is no data object with the specified key.
         """
-        result = self._data.get(key)
-        self._log.debug(f"Retrieved session data object for key {key}: {result}")
-        return result
+        return self._data.get(key)
 
     def get_all(self, durable: bool = True, volatile: bool = True) -> Iterator[tuple[str, Any]]:
         """
@@ -219,7 +224,6 @@ class Session:
         :param key: The key of the session data object.
         :param value: The session data object.
         """
-        self._log.debug(f"Setting session data object for key {key}: {value}")
         self._data[key] = value
         return value
 
@@ -229,14 +233,12 @@ class Session:
         :param key: The key of the session data object to be deleted.
         """
         if key in self._data:
-            self._log.debug(f"Deleting session data object for key {key}")
             del self._data[key]
 
     def clear(self) -> None:
         """
         Clears all session data objects.
         """
-        self._log.debug(f"Clearing all session data objects")
         self._data = {
             Session.Keys.VOLATILE_CACHE.value: self.get_volatile_cache(),
             Session.Keys.NON_VOLATILE_CACHE.value: self.get_non_volatile_cache(),
@@ -254,6 +256,15 @@ class Runner(ABC):
     implementations inherit from the Runner class and encapsulate the agent runner provided by that
     framework.
     """
+
+    CANCELLED_DECISION_MESSAGE: str = (
+        "A human reviewer closed this request without deciding on it, so it was not carried out. "
+        "This is not a refusal — report it as undecided rather than declined."
+    )
+    """What the model is told when a human cancels a paused run rather than denying it. Only
+    LangGraph carries a three-valued decision natively, so on the others this wording is what keeps
+    "nobody decided" apart from "refused". Override per runner if a framework needs different
+    phrasing."""
 
     def __init__(self, name: str):
         """
@@ -295,6 +306,7 @@ class Runner(ABC):
                 f"{type(stored).__name__}. The reserved framework_context key carries a "
                 f"per-run context/state dict; wrap the value in a dict before setting it."
             )
+        _log.debug(f"Adding framework context to runner '{self._name}' for session '{session.id}': keys={list(stored)}")
         return copy.deepcopy(stored)
 
     def _store_framework_context(self, session: Session | None, incoming: dict | None, produced: Mapping[str, Any] | None) -> None:
@@ -312,19 +324,7 @@ class Runner(ABC):
             merged.update(produced)
         self._ensure_framework_context_picklable(session, merged)
         session.set_framework_context(merged)
-
-    @staticmethod
-    def _not_picklable(value: Any) -> bool:
-        """
-        Checks whether the given value can be pickled.
-        :param value: The value to test.
-        :return: True if the value cannot be pickled.
-        """
-        try:
-            pickle.dumps(value)
-            return False
-        except Exception:
-            return True
+        _log.debug(f"Stored framework context from runner '{self._name}' for session '{session.id}': keys={list(merged)}")
 
     @classmethod
     def _ensure_framework_context_picklable(cls, session: Session, ctx: Mapping[str, Any]) -> None:
@@ -337,10 +337,7 @@ class Runner(ABC):
         try:
             pickle.dumps(ctx)
         except Exception as exc:
-            offender = next(
-                (f"{k!r} ({type(v).__name__})" for k, v in ctx.items() if cls._not_picklable(v)),
-                "<unknown key>",
-            )
+            offender = first_unpicklable_entry(ctx)
             raise TypeError(
                 f"Session '{session.id}' framework_context is not picklable; "
                 f"offending entry: {offender}. framework_context values must be "
@@ -362,6 +359,22 @@ class Runner(ABC):
             exc_info=error,
         )
 
+    @staticmethod
+    def _native_kwargs(options: Mapping[str, Any], **ak_owned: Any) -> dict[str, Any]:
+        """
+        Builds the keyword arguments for a native framework run call from the run options resolved for one run.
+        The options are copied first and the keys Agent Kernel owns are written last, so a declared or computed
+        option can never displace a value the adapter populates itself (the same rule as `ak_tool_context` in
+        ADK and `messages` in LangGraph). The copy is shallow and per call, so the helper is safe for any caller
+        passing a live mapping: adjusting a value for one run never touches the input.
+        :param options: The run options resolved for this run (`Agent.resolve_run_options`, or an adapter's filtered view of it).
+        :param ak_owned: The keyword arguments the adapter populates itself; these win over `options`.
+        :return: A new dict holding the merged keyword arguments.
+        """
+        kwargs = dict(options)
+        kwargs.update(ak_owned)
+        return kwargs
+
     @abstractmethod
     async def run(self, agent: Any, session: Session, requests: list[AgentRequest]) -> AgentReply:
         """
@@ -382,6 +395,69 @@ class Runner(ABC):
         """
         return True
 
+    @property
+    def supports_pause(self) -> bool:
+        """
+        Whether this runner can hand a framework pause back to the caller and resume it later.
+
+        Defaults to False, unlike supports_streaming: stream() is abstract, so every runner
+        implements it and True is honest by default, whereas resume() is a non-abstract raising
+        default. A True default would have a bring-your-own runner advertise a capability it does
+        not have and then raise inside its own except, surfacing as a generic error.
+        :return: False unless the subclass overrides it.
+        """
+        return False
+
+    async def resume(
+        self,
+        agent: Any,
+        session: Session,
+        requests: list[AgentRequest],
+        decisions: list[ResumeDecision],
+        record: "PausedRun",
+    ) -> AgentReply:
+        """
+        Continues a paused run from the human's decisions.
+
+        The implementation clears the record with `PausedRunState.clear` once the framework has
+        accepted the decisions, and only then. Runtime deliberately does not clean up afterwards:
+        it cannot tell a failure from an ordinary reply, since this method reports framework
+        failures as text, so a fallback there would delete the record on a transient error and
+        leave the human with a decision that can no longer be applied. The record surviving is what
+        makes a retry possible.
+
+        :param agent: The agent that paused.
+        :param session: The session holding the record.
+        :param requests: The hook-processed request list, carrying the resume request. Adapters put
+            it in the ToolContext, so a tool running during a resumed turn sees what was asked.
+        :param decisions: One per interruption being answered.
+        :param record: The record Runtime validated, passed in so the adapter cannot resume a
+            different one.
+        :return: The result of continuing the run, which may itself be paused again.
+        """
+        raise NotImplementedError(f"Runner '{self.name}' does not support resuming a paused run")
+
+    async def resume_stream(
+        self,
+        agent: Any,
+        session: Session,
+        requests: list[AgentRequest],
+        decisions: list[ResumeDecision],
+        record: "PausedRun",
+    ) -> AsyncGenerator[StreamEvent, None]:
+        """
+        Streaming counterpart of resume(), including its rule on clearing the record.
+
+        :param agent: The agent that paused.
+        :param session: The session holding the record.
+        :param requests: The hook-processed request list, carrying the resume request.
+        :param decisions: One per interruption being answered.
+        :param record: The record Runtime validated.
+        :return: The events the continued run produces.
+        """
+        raise NotImplementedError(f"Runner '{self.name}' does not support resuming a paused run")
+        yield  # pragma: no cover - unreachable; makes this an async generator
+
     @abstractmethod
     async def stream(self, agent: Any, session: Session, requests: list[AgentRequest]) -> AsyncGenerator[StreamEvent, None]:
         """
@@ -390,6 +466,10 @@ class Runner(ABC):
         Every adapter emits events; a runner that yields a bare `str` is rejected by
         `StreamChunk.event` with a `ValidationError` rather than being normalised (§4 rule 6).
 
+        **`RunPaused` is the last thing a paused run yields.** `Runtime` breaks out of the loop on it
+        and closes this generator, so anything after that yield — writing the record, storing context
+        — never runs. Do that work first and yield `RunPaused` last.
+
         :param agent: The agent to run.
         :param session: The session to use for the agent.
         :param requests: The list of requests to provide to the agent.
@@ -397,6 +477,15 @@ class Runner(ABC):
         """
         raise NotImplementedError()
         yield  # makes this an async generator, so overrides match the shape rather than a coroutine
+
+
+RunOptionsFactory = Callable[["Agent", Session, list[AgentRequest]], Mapping[str, Any] | Awaitable[Mapping[str, Any]]]
+"""
+A per-run options factory declared through `Module.run_options`: called as `factory(agent, session, requests)` on
+every run of the agent, before the adapter builds its native call, and returning the framework-native keyword
+arguments for that run (sync, or async when the factory is a coroutine function). The result is validated against
+the adapter's reserved keys and merged over the agent's static `run_options`, factory keys winning per top-level key.
+"""
 
 
 class Agent(ABC):
@@ -411,6 +500,13 @@ class Agent(ABC):
 
     current_agent: ClassVar[contextvars.ContextVar["Agent | None"]] = contextvars.ContextVar("current_agent", default=None)
 
+    RESERVED_RUN_OPTIONS: ClassVar[Mapping[str, str]] = {}
+    """
+    Native run-call keyword arguments this adapter populates itself or depends on for reply mapping, mapped to
+    the one-line reason a caller sees when declaring one through `Module.run_options`. Empty on the base class,
+    so a bring-your-own Agent reserves nothing.
+    """
+
     @classmethod
     def current(cls) -> "Agent | None":
         """
@@ -420,16 +516,20 @@ class Agent(ABC):
         """
         return cls.current_agent.get()
 
-    def __init__(self, name: str, runner: Runner):
+    def __init__(self, name: str, runner: Runner, realtime_runner_cls: "type[RealtimeRunner] | None" = None):
         """
         Initializes an Agent instance.
         :param name: Name of the agent.
         :param runner: Runner associated with the agent.
+        :param realtime_runner_cls: Optional realtime runner class for WebSocket connections.
         """
         self._name: str = name
         self._runner: Runner = runner
+        self._realtime_runner_cls: "type[RealtimeRunner] | None" = realtime_runner_cls
         self._pre_hooks: list[PreHook] = []
         self._post_hooks: list[PostHook] = []
+        self._run_options: dict[str, Any] = {}
+        self._run_options_factory: RunOptionsFactory | None = None
 
     def __repr__(self) -> str:
         """
@@ -453,6 +553,13 @@ class Agent(ABC):
         return self._runner
 
     @property
+    def realtime_runner_cls(self) -> "type[RealtimeRunner] | None":
+        """
+        Returns the realtime runner class associated with the agent, if any.
+        """
+        return self._realtime_runner_cls
+
+    @property
     def pre_hooks(self) -> list[PreHook]:
         """
         Returns the list of pre-execution hooks registered for the agent.
@@ -465,6 +572,67 @@ class Agent(ABC):
         Returns the list of post-execution hooks registered for the agent.
         """
         return self._post_hooks
+
+    @property
+    def run_options(self) -> dict[str, Any]:
+        """
+        Returns the framework-native keyword arguments merged into every native run call for this agent.
+        A live, mutable dict (the same contract as `pre_hooks`), declared through `Module.run_options` and never
+        persisted. Mutating it directly skips the reservation check entirely: a reserved key the runner writes itself
+        is overwritten, but one the adapter passes positionally raises the SDK's duplicate-argument error, and one
+        reserved only because it breaks the reply mapping is forwarded as given.
+        """
+        return self._run_options
+
+    @property
+    def run_options_factory(self) -> RunOptionsFactory | None:
+        """
+        Returns the per-run options factory declared for this agent through `Module.run_options`, or None when the
+        agent resolves to its static `run_options` alone. Settable, with the same contract as mutating `run_options`
+        directly: assigning here skips the callable check `Module.run_options` performs at declaration.
+        """
+        return self._run_options_factory
+
+    @run_options_factory.setter
+    def run_options_factory(self, factory: RunOptionsFactory | None) -> None:
+        self._run_options_factory = factory
+
+    async def resolve_run_options(self, session: Session, requests: list[AgentRequest]) -> dict[str, Any]:
+        """
+        Returns the run options for one run: a copy of the static `run_options` with the factory's result, when a
+        factory is declared, validated and merged over it (factory keys win per top-level key). The factory is called
+        exactly once, with this agent, the session and the request list the runner received; a coroutine result is
+        awaited. The static dict is never mutated, so the caller may adjust the returned dict's top-level keys freely;
+        nested values (a LangGraph `config` dict, a hooks object) are shared with the declaration.
+        :param session: The session the run belongs to.
+        :param requests: The requests the runner received for this run.
+        :return: A new dict holding the options for this run.
+        :raises TypeError: If the factory returns something other than a mapping.
+        :raises ValueError: If the factory's result names a key this adapter reserves.
+        """
+        options = dict(self._run_options)
+        factory = self._run_options_factory
+        if factory is None:
+            return options
+        produced = factory(self, session, requests)
+        if inspect.isawaitable(produced):
+            produced = await produced
+        if not isinstance(produced, Mapping):
+            raise TypeError(f"Run options factory for agent '{self.name}' returned {type(produced).__name__}, expected a mapping")
+        self.validate_run_options(produced)
+        options.update(produced)
+        return options
+
+    def validate_run_options(self, options: Mapping[str, Any]) -> None:
+        """
+        Rejects run options that name a key this adapter reserves.
+        :param options: The run options about to be declared for this agent.
+        :raises ValueError: Naming the adapter, the agent, and every reserved key present with its reason.
+        """
+        reserved = sorted(set(options) & set(self.RESERVED_RUN_OPTIONS))
+        if reserved:
+            details = "; ".join(f"'{key}': {self.RESERVED_RUN_OPTIONS[key]}" for key in reserved)
+            raise ValueError(f"Run option(s) reserved by the '{self.runner.name}' adapter for agent '{self.name}': {details}")
 
     @contextlib.contextmanager
     def _activate(self) -> Iterator[Self]:
@@ -533,8 +701,75 @@ class Agent(ABC):
         """
         from agentkernel.core.tool import SystemToolFactory
 
-        for tool in SystemToolFactory.get_all(self.name):
+        system_tools = SystemToolFactory.get_all(self.name)
+        self._warn_on_tool_name_collisions(system_tools)
+
+        for tool in system_tools:
             self.attach_tool(tool.func)
+
+    def _warn_on_tool_name_collisions(self, system_tools: list[Any]) -> None:
+        """
+        Warn when a system tool is about to shadow one the application already bound by hand.
+
+        Runs after the framework adapter has taken the built native agent, so tools the
+        application bound itself are already present and visible here. The collision is warned
+        about and then allowed: skipping would make newly enabling a capability silently do
+        nothing for this agent, which is the worse of the two failures. The cost is that both
+        tools reach the framework -- tolerated by some, rejected at bind time by others, with
+        this warning explaining why.
+
+        Entirely defensive: an adapter exposing no `tools` collection yields no warning, never
+        a raise.
+
+        :param system_tools: The SystemTool instances about to be attached.
+        :return: None.
+        """
+        native = getattr(self, "agent", None)
+        existing = {name for name in (self._native_tool_name(tool) for tool in self._native_tools(native)) if name}
+        colliding = sorted(existing.intersection(tool.name for tool in system_tools))
+        if colliding:
+            _log.warning(
+                "Agent '%s' already has tools named %s; Agent Kernel is attaching system tools with the same names. "
+                "The agent will carry both. If this agent was wired by hand, remove the manual binding or the configuration that enables it.",
+                self.name,
+                colliding,
+            )
+
+    @staticmethod
+    def _native_tools(native: Any) -> Iterable[Any]:
+        """
+        Return whatever the native agent holds its tools in, as something iterable.
+
+        Smolagents keys its tools by name -- `SmolagentsAgent._append_tools` writes
+        `agent.tools[name] = tool` -- so iterating the attribute directly yields names, not
+        tools. The keys are the names this warning is looking for, so the mapping is taken
+        through `keys()` and :meth:`_native_tool_name` accepts a bare string.
+
+        Anything that is neither a mapping nor a sequence yields nothing rather than raising,
+        which is what makes this method's caller safe against an adapter that means something
+        else entirely by `tools`.
+
+        :param native: The framework's own agent object, or None.
+        :return: The tools or tool names to inspect; empty when there are none to read.
+        """
+        tools = getattr(native, "tools", None)
+        if isinstance(tools, Mapping):
+            return tools.keys()
+        if isinstance(tools, (list, tuple, set, frozenset)):
+            return tools
+        return ()
+
+    @staticmethod
+    def _native_tool_name(tool: Any) -> str | None:
+        """
+        Name one tool the framework already holds.
+
+        :param tool: A tool object, or the name a mapping-shaped collection keyed it by.
+        :return: The tool's name, or None when it cannot be named.
+        """
+        if isinstance(tool, str):
+            return tool
+        return getattr(tool, "name", None) or getattr(tool, "__name__", None)
 
     @staticmethod
     def _append_tools(agent: Any, wrapped: list[Any]) -> None:

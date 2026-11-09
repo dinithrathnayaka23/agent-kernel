@@ -4,7 +4,7 @@ Deploy your Agent Kernel agents as Telegram bots that can respond to messages in
 
 ## Overview
 
-The `AgentTelegramRequestHandler` provides a seamless bridge between your Agent Kernel agents and Telegram. When users message your bot, their messages are automatically routed to your AI agent, which processes them and sends intelligent responses back through Telegram.
+The `TelegramInboundAdapter` provides a seamless bridge between your Agent Kernel agents and Telegram. When users message your bot, their messages are automatically routed to your AI agent, which processes them and sends intelligent responses back through Telegram.
 
 ### How it works:
 
@@ -177,9 +177,9 @@ Each chat maintains conversation history:
 ### Custom Command Handler
 
 ```python
-from agentkernel.telegram import AgentTelegramRequestHandler
+from agentkernel.telegram import TelegramInboundAdapter
 
-class CustomTelegramHandler(AgentTelegramRequestHandler):
+class CustomTelegramHandler(TelegramInboundAdapter):
     async def _handle_command(self, chat_id: int, command: str):
         if command == "/status":
             await self._send_message(chat_id, "✅ Bot is running!")
@@ -284,7 +284,9 @@ Best practice: Implement queuing for high-volume scenarios.
 
 ### Deployment Architecture
 
-- **Serverless (AWS Lambda):** Cost-effective for low-to-medium traffic, auto-scaling built-in
+- **Serverless (AWS Lambda):** Cost-effective for low-to-medium traffic, auto-scaling built-in. See
+  [Messaging integrations on AWS Lambda](../deployment/aws-serverless.md#messaging-integrations): `LambdaWebhookHost`, the authorizer bypass, and the
+  required `telegram.webhook_secret`
 - **Containerized (Docker/Kubernetes):** Better for high traffic and complex workflows
 - **Traditional Server:** Simple deployment for small-scale applications
 

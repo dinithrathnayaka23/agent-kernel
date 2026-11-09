@@ -3,28 +3,13 @@ variable "region" {
   description = "Region"
 }
 
-variable "product_alias" {
+variable "prefix" {
   type        = string
-  description = "Product alias"
-}
-
-variable "env_alias" {
-  type        = string
-  description = "Environment alias"
-}
-
-variable "module_name" {
-  type        = string
-  description = "module name"
+  description = "Prefix applied to every resource name"
 }
 
 variable "is_production" {
   description = "Is production"
   type        = bool
   default     = false
-}
-
-variable "openai_api_key" {
-  description = "OpenAI API Key"
-  type        = string
 }

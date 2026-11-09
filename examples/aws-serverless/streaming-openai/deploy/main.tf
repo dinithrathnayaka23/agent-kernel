@@ -1,19 +1,18 @@
 module "serverless_agents" {
   source  = "yaalalabs/ak-serverless/aws"
-  version = "0.9.1"
+  version = "0.9.5"
 
   providers = { aws = aws, docker = docker }
   # Basic configuration
-  product_alias        = var.product_alias
-  env_alias            = var.env_alias
-  module_name          = var.module_name
+  prefix               = var.prefix
   product_display_name = "AK OpenAI WebSocket Streaming Serverless Example"
   region               = var.region
   is_production        = var.is_production
 
-  # Execution mode - stream delivers each token chunk directly via WebSocket
+  # async + delta delivers each token chunk directly via WebSocket
   queue_mode     = true
-  execution_mode = "stream"
+  execution_mode = "async"
+  message_type   = "delta"
 
   # Memory DB Config
   create_redis_cluster = true
@@ -26,7 +25,6 @@ module "serverless_agents" {
 
   # Request handler configuration
   request_handler = {
-    module_name          = "rqst-hdlr"
     function_name        = "rqh-func"
     function_description = "Agent Kernel OpenAI WebSocket Streaming Sample Lambda"
     handler_path         = "lambda_request_handler.handler"
@@ -41,7 +39,6 @@ module "serverless_agents" {
 
   # Agent runner configuration
   agent_runner = {
-    module_name          = "agent-runner"
     function_name        = "ar-func"
     function_description = "Agent runner for processing OpenAI streaming requests"
     timeout              = 45
@@ -57,7 +54,6 @@ module "serverless_agents" {
   # Response handler configuration
   response_handler = {
     function_name        = "res-func"
-    module_name          = "response-handler"
     function_description = "Response handler for broadcasting stream chunks via WebSocket"
     timeout              = 45
     memory_size          = 256
@@ -69,7 +65,6 @@ module "serverless_agents" {
   # WebSocket connection handler configuration
   ws_connection_handler = {
     function_name        = "ws-con-func"
-    module_name          = "ws-con-hdlr"
     function_description = "WebSocket connection handler for $connect and $disconnect routes"
     timeout              = 45
     memory_size          = 256

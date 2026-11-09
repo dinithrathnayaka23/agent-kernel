@@ -1,18 +1,3 @@
-variable "product_alias" {
-  type        = string
-  description = "Product alias for resource naming"
-}
-
-variable "env_alias" {
-  type        = string
-  description = "Environment alias for resource naming"
-}
-
-variable "module_name" {
-  type        = string
-  description = "Module name for resource naming"
-}
-
 variable "region" {
   type        = string
   description = "AWS region"
@@ -26,6 +11,12 @@ variable "prefix" {
 variable "vpc_id" {
   type        = string
   description = "VPC ID"
+}
+
+variable "security_group_id" {
+  type        = string
+  description = "Agent Runner security group ID. If not provided, a new one will be created"
+  default     = null
 }
 
 variable "subnet_ids" {
@@ -198,8 +189,20 @@ variable "account_id" {
   description = "AWS Account ID"
 }
 
+variable "ssm_enabled" {
+  type        = bool
+  description = "Whether this tier's role may read /ak/<prefix>/* from SSM Parameter Store and receive AK_SECRET__PREFIX"
+  default     = false
+}
+
 variable "execution_mode" {
   type        = string
-  description = "Execution mode (rest_sync, rest_async, async, stream). Injected as AK_EXECUTION__MODE in WebSocket modes so the runner knows whether to emit a full response (async) or one chunk per stream event (stream)."
+  description = "Execution mode (rest_sync, rest_async, async, realtime). Injected as AK_EXECUTION__MODE in async and realtime modes so the runner pushes over WebSocket or dispatches to the realtime runner."
   default     = "rest_sync"
+}
+
+variable "message_type" {
+  type        = string
+  description = "Reply message type ('complete' or 'delta'); injected as AK_EXECUTION__MESSAGE_TYPE when non-null so the runner emits a full response or one chunk per stream event"
+  default     = null
 }

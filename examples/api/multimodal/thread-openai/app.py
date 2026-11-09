@@ -1,5 +1,3 @@
-from typing import Optional
-
 from agentkernel.api import RESTAPI
 from agentkernel.auth import Authoriser
 from agentkernel.openai import OpenAIModule
@@ -9,6 +7,7 @@ from agents import Agent
 general_agent = Agent(
     name="general",
     instructions="You provide assistance with general queries. Give short and clear answers",
+    model="openai/gpt-4.1-mini",
 )
 
 
@@ -26,7 +25,7 @@ class DemoAuthoriser(Authoriser):
         "bob-token": "bob",
     }
 
-    def authorise(self, token: str) -> Optional[str]:
+    def authorise(self, token: str) -> str | None:
         return self._TOKENS.get(token)
 
 

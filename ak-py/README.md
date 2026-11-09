@@ -8,60 +8,74 @@ Agent Kernel is a lightweight **AI agent runtime** and adapter layer for buildin
 ## Features
 
 - **Unified API**: Common abstractions (Agent, Runner, Session, Module, Runtime) across frameworks
-- **Multi-Framework Support**: OpenAI Agents SDK, CrewAI, LangGraph, Google ADK, Smolagents, and Pydantic AI
+- **Multi-Framework Support**: OpenAI Agents SDK, CrewAI, LangGraph, Google ADK, Smolagents, Pydantic AI, Microsoft Agent Framework, and the Claude Agent SDK
 - **Session Management**: Built-in session abstraction with pluggable storage backends
-- **Knowledge Bases**: Unified `KnowledgeBase` interface with ChromaDB, Neo4j, and Starburst/Trino backends via `KnowledgeBuilder`
+- **Knowledge Bases**: Unified, capability-declaring `KnowledgeBase` interface with ChromaDB, Neo4j, Starburst/Trino and Open Knowledge Format bundle (local directory or S3) backends via `KnowledgeBuilder`
 - **Sandbox**: Execute agent-generated code and shell commands in an isolated, permission-bounded environment with pluggable providers (`local_subprocess`, `docker`, `kubernetes`, `e2b`, `daytona`, `ec2_ssm`), workload profiles, policy enforcement, per-user identity, and a queue-decoupled broker for long-running executions
+- **Secret Resolution**: `SecretManager` resolves API keys and passwords environment-first, falling back to a pluggable provider (`env`, `aws_ssm` for AWS SSM Parameter Store, `kubernetes` for Kubernetes Secrets mounted into the pod, or your own) with a TTL'd process cache
 - **Scheduled Tasks**: Deferred and recurring chat execution (`schedule.at`/`schedule.cron`) with a management REST API, five agent-facing tools, and pluggable provider (`local`, `eventbridge`) and store (`in_memory`, `redis`, `valkey`, `dynamodb`) backends
+- **Human in the Loop**: Pause a run for a person's approval or answer and resume from their decision — `status: "PAUSED"` with HTTP 202, a `resume` block carrying `approved`/`denied`/`cancelled` decisions, supported on OpenAI Agents SDK, LangGraph, Pydantic AI, Google ADK and Microsoft Agent Framework over REST, streaming and AG-UI
 - **Flexible Deployment**: Interactive CLI, REST API, serverless, or containerized deployment — see the "Multi-Cloud Deployment" section below
 - **Pluggable Architecture**: Easy to extend with custom framework adapters
 - **MCP Server**: Built-in Model Context Protocol server for exposing agents as MCP tools and exposing any custom tool
 - **A2A Server**: Built-in Agent-to-Agent communication server for exposing agents with a simple configuration change
 - **AG-UI Server**: Built-in [AG-UI protocol](https://github.com/ag-ui-protocol/ag-ui) handler for driving any streaming-capable agent from an AG-UI frontend, with opt-in shared state and client-context tools
+- **A2UI**: Label a JSON reply as [A2UI](https://a2ui.org/) from two config keys, so a client receives a generative-UI document as an object with its format named rather than a string to parse twice
 - **REST API**: Built-in REST API server for agent interaction
 - **Test Automation**: Built-in test suite for testing agents
 
 ## Installation
 
 ```bash
-pip install agentkernel
+uv init --python 3.12 my-agent
+cd my-agent
+uv add agentkernel
 ```
 
 Install optional knowledge base extras as needed:
 
 ```bash
-pip install "agentkernel[chromadb]"
-pip install "agentkernel[neo4j]"
-pip install "agentkernel[trino]"
+uv add "agentkernel[chromadb]"
+uv add "agentkernel[neo4j]"
+uv add "agentkernel[trino]"
 ```
+
+Open Knowledge Format bundles need no extra - `pyyaml` is a core dependency. Serving a bundle from S3
+uses the `aws` extra: `uv add "agentkernel[aws]"`.
 
 For LLM-based thread naming with Conversation Thread Support:
 
 ```bash
-pip install "agentkernel[thread]"
+uv add "agentkernel[thread]"
 ```
 
 For the AG-UI server (`AGUIRequestHandler`):
 
 ```bash
-pip install "agentkernel[agui]"
+uv add "agentkernel[agui]"
 ```
 
 For the sandbox providers (the `local_subprocess` provider needs no extra; `ec2_ssm` rides
 the `aws` extra):
 
 ```bash
-pip install "agentkernel[sandbox-docker]"   # docker provider
-pip install "agentkernel[kubernetes]"       # kubernetes provider (pod per sandbox)
-pip install "agentkernel[e2b]"              # e2b cloud provider
-pip install "agentkernel[daytona]"          # daytona cloud provider
-pip install "agentkernel[aws]"              # ec2_ssm provider (boto3)
+uv add "agentkernel[sandbox-docker]"   # docker provider
+uv add "agentkernel[kubernetes]"       # kubernetes provider (pod per sandbox)
+uv add "agentkernel[e2b]"              # e2b cloud provider
+uv add "agentkernel[daytona]"          # daytona cloud provider
+uv add "agentkernel[aws]"              # ec2_ssm provider (boto3)
+```
+
+For the `aws_ssm` secret provider (AWS SSM Parameter Store):
+
+```bash
+uv add "agentkernel[aws]"
 ```
 
 For cron parsing with the Scheduling capability (the `eventbridge` provider rides the `aws` extra):
 
 ```bash
-pip install "agentkernel[cron]"
+uv add "agentkernel[cron]"
 ```
 
 **Requirements:**
@@ -184,7 +198,7 @@ Agent Kernel includes an interactive CLI for local development and testing.
 **Usage:**
 
 ```bash
-python demo.py
+uv run python demo.py
 ```
 
 Then interact with your agents:
@@ -465,7 +479,7 @@ mode additionally require `multimodal.enabled: true` with a shared attachment st
   - **Field**: `thread.naming.model`
   - **Type**: string
   - **Default**: `gpt-4o-mini`
-  - **Description**: LiteLLM model used to generate thread names (requires the `thread` extra — `pip install "agentkernel[thread]"` — and an API key in the environment; falls back to a truncated prompt prefix otherwise)
+  - **Description**: LiteLLM model used to generate thread names (requires the `thread` extra — `uv add "agentkernel[thread]"` — and an API key in the environment; falls back to a truncated prompt prefix otherwise)
   - **Environment Variable**: `AK_THREAD__NAMING__MODEL`
 
 - **Auto-name Max Length**
@@ -499,7 +513,7 @@ Required when `thread.type=redis`:
 
 ##### Valkey Thread Store
 
-Required when `thread.type=valkey`. Requires the `valkey` extra (`pip install "agentkernel[valkey]"`):
+Required when `thread.type=valkey`. Requires the `valkey` extra (`uv add "agentkernel[valkey]"`):
 
 - **URL**
   - **Field**: `thread.valkey.url`
@@ -674,16 +688,78 @@ sort key; the AWS Terraform modules create it when `create_dynamodb_schedule_tab
   - **Description**: DynamoDB item TTL in seconds
   - **Environment Variable**: `AK_SCHEDULE__STORE__DYNAMODB__TTL`
 
+#### Secret Resolution
+
+`SecretManager.current().get("OPENAI_API_KEY")` resolves a secret by the same environment-variable-style
+name the SDKs already read (`^[A-Z][A-Z0-9_]*$`). Resolution order is fixed: a set, non-empty environment
+variable always wins, then the process cache, then the configured provider. A resolved value is returned to
+the caller and never written back to the environment, so hand it to the SDK explicitly
+(`set_default_openai_key(...)`). A miss raises `SecretNotFoundError` unless a `default` is passed; a provider
+failure raises `SecretError` even with a `default`. The capability is always available — there is no
+`enabled` flag; selecting a provider other than `env` is the only opt-in. See `examples/cli/openai-secret`.
+
+- **Provider Type**
+  - **Field**: `secret.provider.type`
+  - **Type**: string
+  - **Default**: `env`
+  - **Options**: `env` (the process environment), `aws_ssm` (AWS SSM Parameter Store; requires
+    `secret.prefix` and the `aws` extra — `OPENAI_API_KEY` is read from `/ak/<prefix>/openai_api_key`),
+    `kubernetes` (one file per key from Kubernetes Secrets mounted under
+    `secret.provider.kubernetes.mount_path`, standard library only, no API calls), or a dotted path to a
+    `SecretProvider` subclass
+  - **Environment Variable**: `AK_SECRET__PROVIDER__TYPE`
+
+- **Kubernetes Mount Path**
+  - **Field**: `secret.provider.kubernetes.mount_path`
+  - **Type**: string (absolute path)
+  - **Default**: `/var/run/secrets/agentkernel`
+  - **Description**: Directory the Kubernetes Secrets are mounted under, one subdirectory per Secret
+    (`<mount_path>/<secret-name>/<KEY>`). The Helm chart's `secretStore` mounts under the default. Read only by
+    the `kubernetes` provider
+  - **Environment Variable**: `AK_SECRET__PROVIDER__KUBERNETES__MOUNT_PATH`
+
+- **Prefix**
+  - **Field**: `secret.prefix`
+  - **Type**: string
+  - **Default**: `""`
+  - **Description**: Deployment scope providers namespace secrets under; a single path segment. Required by
+    `aws_ssm`, ignored by `env` and `kubernetes`. Injected by the AWS Terraform modules when `ssm_enabled = true`
+  - **Environment Variable**: `AK_SECRET__PREFIX`
+
+- **Cache TTL**
+  - **Field**: `secret.cache_ttl`
+  - **Type**: integer
+  - **Default**: `300`
+  - **Description**: Seconds a provider hit is served from the process cache (`0` disables caching); the
+    rotation-pickup window for values read per call
+  - **Environment Variable**: `AK_SECRET__CACHE_TTL`
+
 #### Execution Configuration
 
 Configure queue-backed and serverless execution behavior.
 
 - **Execution Mode**
   - **Field**: `execution.mode`
-  - **Options**: `rest_sync`, `rest_async`, `stream`, `async`
-  - **Default**: `None`
-  - **Description**: Selects the execution mode used for queue-backed and serverless request handling
+  - **Options**: `rest_sync`, `rest_async`, `async`, `realtime`
+  - **Default**: `None` (runs as `rest_sync`)
+  - **Description**: How a request is invoked: `rest_sync` (REST, wait for the reply), `rest_async`
+    (REST, submit then poll), `async` (WebSocket only), `realtime` (persistent realtime sockets, e.g.
+    the LiveKit voice gateway). `stream` was removed and fails at config load with `AKConfigError`:
+    set `mode: rest_sync` with `message_type: delta` for SSE over REST, or `mode: async` with
+    `message_type: delta` for chunks over WebSocket
   - **Environment Variable**: `AK_EXECUTION__MODE`
+
+- **Message Type**
+  - **Field**: `execution.message_type`
+  - **Options**: `complete`, `delta`
+  - **Default**: `None` (resolves to `delta` for `realtime`, `complete` otherwise)
+  - **Description**: How much of the reply each delivered message carries. `complete` sends the whole
+    reply in one message (JSON under `rest_sync`, one `CHAT_RESPONSE` under `async`); `delta` sends one
+    message per chunk (SSE under `rest_sync`, one `STREAM_CHUNK` per chunk ending with `done: true`
+    under `async`). `rest_async` + `delta` and `realtime` + `complete` fail at config load. AWS
+    Lambda (REST router init) and the ECS queue-mode `ECSIOHandler` (startup) refuse `rest_sync` +
+    `delta`; use `async` + `delta` there
+  - **Environment Variable**: `AK_EXECUTION__MESSAGE_TYPE`
 
 - **Queues**
   - **Field**: `execution.queues`
@@ -991,10 +1067,13 @@ Configure the REST API server (if using the API module).
 Mounting `AGUIRequestHandler` (from `agentkernel.agui`, requires the `agentkernel[agui]` extra — `pip
 install "agentkernel[agui]"`) is what enables the [AG-UI protocol](https://github.com/ag-ui-protocol/ag-ui)
 surface; the `agui` block only parameterizes it, and it never switches the surface on by itself.
+Mount `AGUIPipelineRequestHandler` through `IOHandler.run(handlers=[...])` instead to run the agent
+on the queue pipeline rather than inside the SSE request; same routes and events, and it refuses to
+start unless the configured stores can serve a run from the runner process.
 `AGUIRequestHandler` refuses to construct without an `Authoriser` or `AuthValidator` — AG-UI runs
 agents on a caller's behalf and has no anonymous mode. Only agents whose runner declares
-`supports_streaming = True` are reachable (currently OpenAI Agents SDK, LangGraph, Google ADK, and
-Pydantic AI — not CrewAI or Smolagents). See `examples/api/agui`.
+`supports_streaming = True` are reachable (currently OpenAI Agents SDK, LangGraph, Google ADK, Pydantic AI
+and Microsoft Agent Framework — not CrewAI or Smolagents). See `examples/api/agui`.
 
 - **Agents**
   - **Field**: `agui.agents`
@@ -1032,6 +1111,27 @@ Pydantic AI — not CrewAI or Smolagents). See `examples/api/agui`.
   - **Default**: unset (every agent gets the tools)
   - **Environment Variable**: `AK_AGUI__CLIENT_CONTEXT__AGENTS` (comma-separated)
 
+#### A2UI Configuration
+
+Labels a JSON reply as [A2UI](https://a2ui.org/) so a client receives the document as an object with
+its format named, instead of a JSON string it has to parse a second time. Agent Kernel supplies the
+media type and nothing else — the component catalog belongs in your agent's instructions, because it
+has to match the components your frontend implements. The block does not reach a streamed run
+(`execution.message_type: delta`) or an agent configured with a framework `output_type`; both are told to
+write their own post-hook. See `examples/api/a2ui-openai`.
+
+- **Enabled**
+  - **Field**: `a2ui.enabled`
+  - **Default**: `false`
+  - **Description**: Master switch. When off, no hook runs and no reply is labelled
+  - **Environment Variable**: `AK_A2UI__ENABLED`
+
+- **Agents**
+  - **Field**: `a2ui.agents`
+  - **Default**: unset (every agent's JSON replies are labelled)
+  - **Description**: Agent names whose JSON replies are labelled `application/a2ui+json`. Naming an agent is the declaration that it emits A2UI; a reply from it that does not parse as JSON is left alone
+  - **Environment Variable**: `AK_A2UI__AGENTS` (comma-separated)
+
 #### Trace (Observability) Configuration
 
 Configure tracing and observability for monitoring agent execution.
@@ -1044,7 +1144,7 @@ Configure tracing and observability for monitoring agent execution.
 
 - **Type**
   - **Field**: `trace.type`
-  - **Options**: `langfuse`, `openllmetry`, `logfire`
+  - **Options**: `langfuse`, `openllmetry`, `logfire`, `cloudwatch`
   - **Default**: `langfuse`
   - **Description**: Type of tracing provider to use
   - **Environment Variable**: `AK_TRACE__TYPE`
@@ -1054,7 +1154,7 @@ Configure tracing and observability for monitoring agent execution.
 To use Langfuse for tracing, install the langfuse extra:
 
 ```bash
-pip install agentkernel[langfuse]
+uv add "agentkernel[langfuse]"
 ```
 
 Configure Langfuse credentials via environment variables:
@@ -1078,7 +1178,7 @@ trace:
 To use OpenLLMetry for tracing, install the openllmetry extra:
 
 ```bash
-pip install agentkernel[openllmetry]
+uv add "agentkernel[openllmetry]"
 ```
 
 Configure Traceloop credentials via environment variables:
@@ -1101,7 +1201,7 @@ trace:
 To use Logfire for tracing, install the logfire extra:
 
 ```bash
-pip install agentkernel[logfire]
+uv add "agentkernel[logfire]"
 ```
 
 Configure the Logfire write token via an environment variable (optional — without a token, Logfire
@@ -1119,6 +1219,50 @@ trace:
   type: logfire
 ```
 
+**AWS CloudWatch Setup:**
+
+To send traces to Amazon CloudWatch (via AWS X-Ray, searchable in Transaction Search), install the cloudwatch extra:
+
+```bash
+uv add "agentkernel[cloudwatch]"
+```
+
+Spans are exported over OTLP to the X-Ray endpoint of your region, signed with the standard AWS credential
+chain (environment, profile, SSO, or instance/task role). Enable CloudWatch Transaction Search once in the
+account, and give the agent's role the `AWSXrayWriteOnlyAccess` managed policy:
+
+```bash
+export AWS_REGION=us-east-1
+# Optional: export through the CloudWatch agent or an OpenTelemetry collector instead
+# export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://localhost:4318/v1/traces
+```
+
+Enable tracing in your configuration:
+
+```yaml
+trace:
+  enabled: true
+  type: cloudwatch
+```
+
+**Fetching spans back (trace evaluation):**
+
+Every built-in tracer can read recorded spans back through one provider-neutral filter, so production traces can be
+evaluated offline:
+
+```python
+from datetime import timedelta
+
+from agentkernel.trace import SpanKind, Trace
+
+tool_calls = Trace.get().fetch_spans(last=timedelta(hours=6), kinds=[SpanKind.TOOL])
+traces = Trace.get().fetch_traces(session_id="session-123", last=timedelta(hours=24))
+```
+
+Spans are returned oldest first as `FetchedSpan` objects. See the
+[Traceability docs](https://kernel.yaala.ai/docs/advanced/traceability) and the `examples/aws-serverless/openai-langfuse-trace-evaluation`
+example. Custom tracers that override `fetch_spans` can be checked with `agentkernel.trace.testing.TraceFetchContract`.
+
 #### Test Configuration
 
 Configure test comparison modes for automated testing. Test configuration is separate from the application configuration: it is **not** part of `config.yaml`. It lives in its own `test-config.yaml` file and is only loaded when the testing utilities (`agentkernel.test`) are used — see the [Test Configuration (test-config.yaml)](#test-configuration-test-configyaml) section for file resolution, environment variables, and migration notes.
@@ -1133,7 +1277,7 @@ Configure test comparison modes for automated testing. Test configuration is sep
 - **Evaluator**
   - **Field**: `evaluator`
   - **Default**: `deepeval`
-  - **Description**: Built-in evaluator short name (`deepeval` or `opik`), or a dotted path to your own `AKEvaluator` subclass
+  - **Description**: Built-in evaluator short name (`deepeval`, `opik` or `jev`), or a dotted path to your own `AKEvaluator` subclass
   - **Environment Variable**: `AK_TEST__EVALUATOR`
 
 - **Llm Model**
@@ -1155,8 +1299,8 @@ Configure test comparison modes for automated testing. Test configuration is sep
   - **Environment Variable**: `AK_TEST__LLM__EMBEDDING_MODEL`
 
 **Test Modes:**
-- `score`: Deterministic, offline string-match scoring via the configured evaluator (built-in `deepeval`: `Scorer.quasi_exact_match_score`; built-in `opik`: `LevenshteinRatio`, requires `pip install "agentkernel[opik]"`)
-- `llm`: LLM-as-judge evaluation via the configured evaluator (built-in `deepeval` or `opik`: `GEval`) for semantic similarity
+- `score`: Deterministic, offline string-match scoring via the configured evaluator (built-in `deepeval`: `Scorer.quasi_exact_match_score`; built-in `opik`: `LevenshteinRatio`, requires `uv add "agentkernel[opik]"`; built-in `jev` has no score mode)
+- `llm`: LLM-as-judge evaluation via the configured evaluator (built-in `deepeval` or `opik`: `GEval`; built-in `jev`: a TypeSafe JEV yes/no Noul question) for semantic similarity
 - `fallback`: Tries score first, falls back to llm if score fails
 
 ```yaml
@@ -1254,19 +1398,19 @@ Configure input and output guardrails to validate agent requests and responses f
 To use OpenAI guardrails, install the openai-guardrails package:
 
 ```bash
-pip install agentkernel[openai]
+uv add "agentkernel[openai]"
 ```
 
 To use AWS Bedrock guardrails, install the AWS package:
 
 ```bash
-pip install agentkernel[aws]
+uv add "agentkernel[aws]"
 ```
 
 To use Walled AI guardrails, install the Walled AI package:
 
 ```bash
-pip install agentkernel[walledai]
+uv add "agentkernel[walledai]"
 ```
 
 Create guardrail configuration:
@@ -1327,8 +1471,8 @@ guardrail:
 Enable the sandbox capability to let agents execute code and shell commands in an isolated,
 permission-bounded environment. When enabled, agents automatically gain sandbox tools
 (`run_code`, `run_command`, `write_sandbox_file`, `read_sandbox_file`, `check_sandbox_task`,
-`list_sandbox_sessions`, `new_sandbox_session`, `destroy_sandbox_session`) and the usage
-guidance is injected into their system prompt.
+`list_sandbox_sessions`, `new_sandbox_session`, `destroy_sandbox_session`, plus `install_packages`
+when a profile permits package installs) and the usage guidance is injected into their system prompt.
 
 Minimal single-backend form (a `default` profile is synthesized from `type` + its config block):
 
@@ -1366,6 +1510,9 @@ sandbox:
         memory_mb: 512
         timeout: 30.0           # per-execution wall-clock seconds (always enforced)
         strict: true            # fail closed when the provider can't enforce a policy dimension
+        languages: [python]     # run_code allowlist; omitted = provider-declared; [] = no run_code
+        package_install:        # omitted = installs denied; present = install_packages permitted
+          ecosystems: [python]
       docker:
         image: python:3.12-slim
 ```
@@ -1375,7 +1522,8 @@ Key fields:
 - **`enabled`** (`AK_SANDBOX__ENABLED`, default `false`) — master switch; inert when off.
 - **`agents`** — agent names the tools/prompt attach to; omit for all agents.
 - **`type`** (per profile) — `local_subprocess` (no isolation; dev/test), `docker`
-  (container isolation; `sandbox-docker` extra), `e2b` (managed micro-VMs; `e2b` extra),
+  (container isolation; `sandbox-docker` extra), `kubernetes` (pod per sandbox; `kubernetes`
+  extra), `e2b` (managed micro-VMs; `e2b` extra),
   `daytona` (cloud containers; `daytona` extra), `ec2_ssm` (attach to an existing EC2
   instance via SSM; `aws` extra), or a dotted path to your own `SandboxProvider`.
 - **`scope`** — `per_call` (fresh per execution), `per_session` (persists across turns),
@@ -1385,10 +1533,14 @@ Key fields:
   e.g. an EC2 instance via `ec2_ssm`; requires the provider's `attach_to` and is validated
   against the provider's lifecycle capabilities at startup).
 - **`policy`** — network egress, filesystem paths, cpu/memory, timeout; enforced per provider,
-  fail-closed under `strict`.
+  fail-closed under `strict`. Also the permissions: `languages` (which `run_code` languages are
+  allowed) and `package_install` (whether `install_packages` is allowed, and for which ecosystems).
+  A provider's `package_installers` sets the installer command per ecosystem (default `pip install`),
+  and on `docker`/`kubernetes`/`ec2_ssm` its `language_runtimes` sets the interpreter per language (default `python -c`; on `ec2_ssm` each argv reads the code from stdin, default `python3 -`).
 - **`identity.mode`** + **`principal_resolver`** — run code under the agent's or the invoking
   user's identity.
-- **`broker.flavor`** — `thread` (default, for CLI/REST) or `embedded` (inline/synchronous).
+- **`broker.flavor`** — `thread` (default, for CLI/REST), `embedded` (inline/synchronous), or
+  `queue` (a separate `QueueBrokerWorker` fleet over a queue transport).
 
 See the [Sandbox guide](https://kernel.yaala.ai/docs/advanced/sandbox) for the full
 reference and the `examples/sandbox` and `examples/sandbox/identity` examples.
@@ -1507,7 +1659,7 @@ export AK_API__PORT=8000
 export AK_A2A__ENABLED=true
 export AK_MCP__ENABLED=false
 export AK_TRACE__ENABLED=true
-export AK_TRACE__TYPE=langfuse  # or openllmetry, logfire
+export AK_TRACE__TYPE=langfuse  # or openllmetry, logfire, cloudwatch
 # For Langfuse:
 # export LANGFUSE_PUBLIC_KEY=pk-lf-...
 # export LANGFUSE_SECRET_KEY=sk-lf-...
@@ -1516,9 +1668,11 @@ export AK_TRACE__TYPE=langfuse  # or openllmetry, logfire
 # export TRACELOOP_API_KEY=your-api-key
 # For Logfire:
 # export LOGFIRE_TOKEN=your-write-token
+# For CloudWatch:
+# export AWS_REGION=us-east-1
 # Test harness (loaded from the separate test-config.yaml — see Test Configuration)
 export AK_TEST__MODE=fallback  # Options: score, llm, fallback
-export AK_TEST__EVALUATOR=deepeval  # Built-in short name (deepeval or opik), or a dotted path to your own AKEvaluator subclass
+export AK_TEST__EVALUATOR=deepeval  # Built-in short name (deepeval, opik or jev), or a dotted path to your own AKEvaluator subclass
 export AK_TEST__LLM__MODEL=gpt-4o-mini
 export AK_TEST__LLM__PROVIDER=openai
 export AK_TEST__LLM__EMBEDDING_MODEL=text-embedding-3-small
@@ -1562,7 +1716,7 @@ AK_API__PORT=8080
 AK_A2A__ENABLED=true
 AK_A2A__URL=http://localhost:8080/a2a
 AK_TRACE__ENABLED=true
-AK_TRACE__TYPE=langfuse  # or openllmetry, logfire
+AK_TRACE__TYPE=langfuse  # or openllmetry, logfire, cloudwatch
 # Langfuse credentials (if using langfuse):
 # LANGFUSE_PUBLIC_KEY=pk-lf-...
 # LANGFUSE_SECRET_KEY=sk-lf-...
@@ -1571,6 +1725,8 @@ AK_TRACE__TYPE=langfuse  # or openllmetry, logfire
 # TRACELOOP_API_KEY=your-api-key
 # Logfire credentials (if using logfire):
 # LOGFIRE_TOKEN=your-write-token
+# CloudWatch region (if using cloudwatch; credentials come from the AWS credential chain):
+# AWS_REGION=us-east-1
 ```
 
 #### config.yaml
@@ -1788,7 +1944,7 @@ gmail:
 
 Test harness configuration (comparison mode, evaluator backend, llm models) is separate from the application configuration. It is not part of `config.yaml` — it lives in its own `test-config.yaml` file, resolved from the current working directory, and is only loaded when the testing utilities (`agentkernel.test`) are used. A legacy `test:` section in `config.yaml` is ignored. See [Test Configuration](#test-configuration) under Configuration Options for the full list of fields and defaults.
 
-The `evaluator` field accepts two built-in short names — `deepeval` (default, `pip install "agentkernel[test]"`) or `opik` (`pip install "agentkernel[opik]"`, [Opik](https://www.comet.com/docs/opik/) by Comet, runs entirely locally with `OPIK_TRACK_DISABLE` set so no Opik Cloud account or API key is needed) — or a dotted path to your own `AKEvaluator` subclass.
+The `evaluator` field accepts three built-in short names — `deepeval` (default, `uv add "agentkernel[test]"`) or `opik` (`uv add "agentkernel[opik]"`, [Opik](https://www.comet.com/docs/opik/) by Comet, runs entirely locally with `OPIK_TRACK_DISABLE` set so no Opik Cloud account or API key is needed) or `jev` (`uv add "agentkernel[jev]"`, hosted [TypeSafe JEV](https://docs.typesafe.ai) judge; `mode: llm` only, needs `TYPESAFE_API_KEY`, and sends the comparison text to `api.typesafe.ai`) — or a dotted path to your own `AKEvaluator` subclass.
 
 **test-config.yaml:**
 
@@ -1861,6 +2017,8 @@ Sessions maintain state across agent interactions. Framework adapters manage the
 - `"openai"` — OpenAI Agents SDK session data
 - `"adk"` — Google ADK session data
 - `"pydanticai"` — Pydantic AI session data (message history)
+- `"maf"` — Microsoft Agent Framework session data (`AgentSession` snapshot)
+- `"claude"` — Claude Agent SDK session data (each agent's Claude session id and transcript)
 
 Access the session in your runner:
 
@@ -1880,14 +2038,14 @@ def run(self, agent, prompt, session):
 
 **Requirements:**
 - Python 3.12+
-- uv 0.8.0+ (recommended) or pip
+- uv 0.8.0+
 
 **Setup:**
 
 ```bash
 git clone https://github.com/yaalalabs/agent-kernel.git
 cd agent-kernel/ak-py
-uv sync  # or: pip install -e ".[dev]"
+uv sync
 ```
 
 **Run Tests:**

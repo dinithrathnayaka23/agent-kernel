@@ -28,6 +28,7 @@ const sidebars = {
         'core-concepts/tools',
         'core-concepts/runner',
         'core-concepts/session',
+        'core-concepts/memory-backends',
         'core-concepts/module',
         'core-concepts/runtime',
         'core-concepts/configuration',
@@ -42,6 +43,7 @@ const sidebars = {
         'architecture/execution-flow',
         'architecture/memory-management',
         'architecture/sandbox-internals',
+        'architecture/realtime-internals',
       ],
     },
     {
@@ -55,6 +57,8 @@ const sidebars = {
         'frameworks/google-adk',
         'frameworks/smolagents',
         'frameworks/pydantic-ai',
+        'frameworks/claude-agent-sdk',
+        'frameworks/microsoft-agents',
         'frameworks/multi-framework',
       ],
     },
@@ -112,6 +116,7 @@ const sidebars = {
         'integrations/teams',
         'integrations/hooks',
         'integrations/agui',
+        'integrations/livekit',
       ],
     },
     {
@@ -142,7 +147,10 @@ const sidebars = {
         'advanced/multimodal',
         'advanced/threads',
         'advanced/scheduling',
+        'advanced/human-in-the-loop',
         'advanced/sandbox',
+        'advanced/secrets',
+        'advanced/a2ui',
         'advanced/knowledge-bases',
         'advanced/queue-mode-guide',
         {

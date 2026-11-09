@@ -12,10 +12,10 @@ Three topologies are supported:
 |------|-----------|-------------|----------|
 | **Simple REST** | One (runs `RESTAPI`) | `queue_mode = false` (default) in Terraform; app entrypoint `RESTAPI.run` | Moderate traffic, simplest setup |
 | **Scalable queue mode** | Two (IO container + Agent Runner service) | `queue_mode = true`, `execution_mode = "rest_sync"` or `"rest_async"` in Terraform; entrypoints `ECSIOHandler.run` + `ECSAgentRunner.run`; `execution.queues.*` config | High throughput, long-running agents, backpressure control |
-| **WebSocket mode** | One (direct) or two (queue, same split as above) | `execution_mode = "async"` or `"stream"` in Terraform | Real-time, bidirectional, connection-based interactions |
+| **WebSocket mode** | One (direct) or two (queue, same split as above) | `execution_mode = "async"` in Terraform (`message_type = "delta"` for chunks) | Real-time, bidirectional, connection-based interactions |
 
 :::note Protocol support
-ECS containers serve JSON REST by default. **SSE event streaming** (`execution.mode: stream`) is available in the **Simple REST** topology (single container running `RESTAPI`) with streaming-capable frameworks. **WebSocket mode** is also available on ECS via a WebSocket API Gateway — see [WebSocket Mode](#websocket-mode) below — as either `execution_mode = "async"` (one `CHAT_RESPONSE` push per reply) or `"stream"` (one `STREAM_CHUNK` push per stream event).
+ECS containers serve JSON REST by default. **SSE event streaming** (`execution.mode: rest_sync` with `execution.message_type: delta`) is available in the **Simple REST** topology (single container running `RESTAPI`) with streaming-capable frameworks; `ECSIOHandler` refuses it at startup. **WebSocket mode** is also available on ECS via a WebSocket API Gateway — see [WebSocket Mode](#websocket-mode) below — as `execution_mode = "async"` with either `message_type = "complete"` (one `CHAT_RESPONSE` push per reply, the default) or `message_type = "delta"` (one `STREAM_CHUNK` push per stream event). `execution_mode = "stream"` was removed and fails at `terraform plan`; use `execution_mode = "async"` with `message_type = "delta"`.
 :::
 
 ## Simple REST Architecture
@@ -184,6 +184,12 @@ if __name__ == "__main__":
     runner()
 ```
 
+Pass `ECSIOHandler.run(auth_validator=CustomAuthValidator())` to secure the REST routes in queue
+mode: it is bound onto every REST route via `RESTAPI.add_auth_handlers` (the same mechanism shown
+in [Authentication](#authentication)) before the `rest-api` thread starts. The same
+`auth_validator` also authenticates the WebSocket `$connect` handshake when [WebSocket
+Mode](#websocket-mode) is enabled, so one validator covers both protocols.
+
 ### Container 2: Agent Runner (`ECSAgentRunner`)
 
 Extends `ECSSQSConsumer` (which in turn extends the shared `RawQueueConsumer` base also used by Lambda's `LambdaSQSConsumer`): runs `execution.queues.input.no_of_consumers` (default **5**) independent threads, each polling the Input Queue in a blocking loop, executing the agent through the full `Runtime.run()` pipeline (hooks, guardrails, session persistence), and putting the result on the Output Queue with the same `request_id`. On permanent failure it forwards an error body to the Output Queue so the client still receives a response.
@@ -291,6 +297,45 @@ Two further consequences worth knowing:
 For the full example see [examples/aws-containerized/openai-schedule](https://github.com/yaalalabs/agent-kernel/tree/develop/examples/aws-containerized/openai-schedule),
 and for the application side see the [Scheduling guide](../advanced/scheduling.md).
 
+## Secret Resolution (SSM Parameter Store)
+
+Application secrets such as `OPENAI_API_KEY` can be read from AWS SSM Parameter Store instead of being
+passed through Terraform as environment variables. One variable, `false` by default and fully
+`count`-gated, turns on the infrastructure:
+
+| Variable | Description | Type | Default |
+|---|---|---|---|
+| `ssm_enabled` | Grant the ECS task role that runs the agent (the agent runner when `queue_mode = true`, otherwise the REST service) `ssm:GetParameter` (and nothing else) on `arn:aws:ssm:<region>:<account>:parameter/ak/<prefix>/*` and inject `AK_SECRET__PREFIX = <prefix>` | `bool` | `false` |
+
+```hcl
+ssm_enabled = true
+```
+
+**Terraform is only half of it.** The module never injects `secret.provider.type`; the application's
+`config.yaml` must declare the backend:
+
+```yaml
+secret:
+  provider:
+    type: aws_ssm
+```
+
+Terraform does not create the parameters either, so the key never passes through Terraform state. Create
+each one yourself as a `SecureString` (AWS-managed `alias/aws/ssm` key), named after the key lowercased
+under the prefix:
+
+```bash
+aws ssm put-parameter --name "/ak/<prefix>/openai_api_key" \
+    --type SecureString --value "$OPENAI_API_KEY" --overwrite
+```
+
+Do not also inject the key as an environment variable: a set, non-empty environment variable always wins
+over SSM.
+
+For the full example see [examples/aws-containerized/openai-dynamodb-scalable](https://github.com/yaalalabs/agent-kernel/tree/develop/examples/aws-containerized/openai-dynamodb-scalable),
+and for the application side (resolution order, caching, rotation) see the
+[Secret Resolution guide](../advanced/secrets.md).
+
 ## WebSocket Mode
 
 Set `execution_mode = "async"` to front the ECS service with a **WebSocket API Gateway**
@@ -371,7 +416,7 @@ module "containerized_agents" {
   source  = "yaalalabs/ak-containerized/aws"
   version = "0.8.1"
 
-  # ... product_alias / env_alias / module_name / region / vpc_id / private_subnet_ids ...
+  # ... prefix / region / vpc_id / private_subnet_ids ...
 
   rest_service = {
     package_path   = "../dist"
@@ -382,7 +427,8 @@ module "containerized_agents" {
   }
 
   queue_mode     = false          # or true for the two-container queue variant
-  execution_mode = "async"        # "stream" delivers the reply as STREAM_CHUNK messages instead
+  execution_mode = "async"
+  message_type   = "complete"     # "delta" delivers the reply as STREAM_CHUNK messages instead
   ws_chat_route  = "chat"         # optional, defaults to "chat"
   ws_routes = [                   # every @AWSWebsocketAPI.register(...) route, declared here too
     { route = "status" },
@@ -399,13 +445,13 @@ internal NLB + VPC Link V1, a DynamoDB connections table (hash `user_id`, range
 (`execute-api:ManageConnections` + connections-table CRUD/Query). The DynamoDB response store
 is simply never created in WebSocket mode — replies are always pushed over the connection
 instead of stored. `gateway_endpoints` specifically has a Terraform validation rule rejecting
-it in `async`/`stream` modes.
+it in `async` mode.
 
 For the full examples see [examples/aws-containerized/openai-websocket](https://github.com/yaalalabs/agent-kernel/tree/develop/examples/aws-containerized/openai-websocket)
 (direct mode, async), [examples/aws-containerized/openai-websocket-scalable](https://github.com/yaalalabs/agent-kernel/tree/develop/examples/aws-containerized/openai-websocket-scalable)
 (queue mode, async), [examples/aws-containerized/openai-stream](https://github.com/yaalalabs/agent-kernel/tree/develop/examples/aws-containerized/openai-stream)
-(direct mode, stream), and [examples/aws-containerized/openai-stream-queue-mode](https://github.com/yaalalabs/agent-kernel/tree/develop/examples/aws-containerized/openai-stream-queue-mode)
-(queue mode, stream).
+(direct mode, async + delta), and [examples/aws-containerized/openai-stream-queue-mode](https://github.com/yaalalabs/agent-kernel/tree/develop/examples/aws-containerized/openai-stream-queue-mode)
+(queue mode, async + delta).
 
 ## Advantages
 
@@ -672,10 +718,9 @@ import os
 import jwt
 from agentkernel.api import RESTAPI
 from agentkernel.auth import AuthValidator, ValidationContext, ValidationResult
-from typing import Optional
 
 class CustomAuthValidator(AuthValidator):
-    def validate(self, token: str, context: Optional[ValidationContext] = None) -> ValidationResult:
+    def validate(self, token: str, context: ValidationContext | None = None) -> ValidationResult:
         """Validate authentication token and return result."""
         payload = jwt.decode(token, options={"verify_signature": False})
         print("Payload", payload)

@@ -28,6 +28,8 @@ Use this skill to add new tools, agents, or handoffs to an existing Agent Kernel
    - `from agentkernel.adk import GoogleADKModule` → **Google ADK**
    - `from agentkernel.smolagents import SmolagentsModule` → **Smolagents**
    - `from agentkernel.pydanticai import PydanticAIModule` → **Pydantic AI**
+   - `from agentkernel.maf import MAFModule` → **Microsoft Agent Framework**
+   - `from agentkernel.claude import ClaudeModule` → **Claude Agent SDK**
 
 2. **Existing agents** — List every agent already defined (names, roles, instructions).
 
@@ -152,6 +154,23 @@ tools = PydanticAIToolBuilder.bind([lookup_order, existing_tool_1])
 agent = Agent(model="openai:gpt-4o-mini", name="support", description="...", instructions="...", tools=tools)
 ```
 
+**Microsoft Agent Framework:**
+```python
+from agentkernel.maf import MAFToolBuilder
+
+tools = MAFToolBuilder.bind([lookup_order, existing_tool_1])
+agent = Agent(client, name="support", description="...", instructions="...", tools=tools)
+```
+
+**Claude Agent SDK:**
+```python
+from agentkernel.claude import ClaudeAgentSpec, ClaudeToolBuilder
+from claude_agent_sdk import ClaudeAgentOptions
+
+tools = ClaudeToolBuilder.bind([lookup_order, existing_tool_1])
+agent = ClaudeAgentSpec(name="support", description="...", options=ClaudeAgentOptions(...), tools=tools)
+```
+
 > **Gotcha:** Always add the new tool to the **existing** `bind()` call for that agent. Don't create a second `bind()`.
 
 ---
@@ -253,7 +272,46 @@ support_agent = Agent(
 )
 ```
 
+**Claude Agent SDK:**
+```python
+from agentkernel.claude import ClaudeAgentSpec, ClaudeToolBuilder
+from claude_agent_sdk import ClaudeAgentOptions
+
+support_agent = ClaudeAgentSpec(
+    name="support",
+    description="Specialist for customer support and order inquiries",
+    options=ClaudeAgentOptions(
+        model="sonnet",
+        system_prompt="You help customers with order lookups, returns, and general support questions.",
+        tools=[],                   # no built-in Claude Code tools on the server
+        setting_sources=[],
+        permission_mode="dontAsk",
+        verbatim_prompts=True,      # no @path file expansion or slash commands from request text
+    ),
+    tools=ClaudeToolBuilder.bind([lookup_order]),
+)
+```
+
+> **Gotcha (Claude Agent SDK):** Match the existing agents' `tools=[]` / `setting_sources=[]` / `permission_mode` / `verbatim_prompts=True` lockdown; the SDK's defaults give the model Bash and file tools on the host. Tools bound with `ClaudeToolBuilder.bind([...])` are approved automatically; bind sensitive tools with `needs_approval=True` instead, so each call pauses for a human decision.
+
 > **Gotcha (Pydantic AI):** Always pass `name=` (AK registers by name eagerly; Pydantic AI otherwise infers it lazily at first run) **and** `description=` (Pydantic AI's description is optional but is what AK reports as the agent description / A2A summary). The provider key for the model string (e.g. `OPENAI_API_KEY`) must be set at import time — Pydantic AI resolves the provider at construction.
+
+**Microsoft Agent Framework:**
+```python
+from agent_framework import Agent
+from agent_framework.openai import OpenAIChatClient
+from agentkernel.maf import MAFToolBuilder
+
+support_agent = Agent(
+    OpenAIChatClient(model="gpt-4.1-mini"),   # swap the client for another MAF provider (agent-framework-anthropic, ...)
+    name="support",               # Always pass name= explicitly!
+    description="Specialist for customer support and order inquiries",
+    instructions="You help customers with order lookups, returns, and general support questions.",
+    tools=MAFToolBuilder.bind([lookup_order]),
+)
+```
+
+> **Gotcha (Microsoft Agent Framework):** Always pass `name=` — `MAFModule` raises `ValueError` for an unnamed agent because AK registers agents by name immediately.
 
 #### 4b. Register with the Module
 
@@ -267,7 +325,7 @@ OpenAIModule([triage_agent, math_agent, general_agent])
 OpenAIModule([triage_agent, math_agent, general_agent, support_agent])
 ```
 
-This applies to all frameworks — `LangGraphModule`, `CrewAIModule`, `GoogleADKModule`, `SmolagentsModule`, `PydanticAIModule` work the same way.
+This applies to all frameworks — `LangGraphModule`, `CrewAIModule`, `GoogleADKModule`, `SmolagentsModule`, `PydanticAIModule`, `MAFModule`, `ClaudeModule` work the same way.
 
 #### 4c. Structured Output (Optional)
 
@@ -288,6 +346,8 @@ class OrderStatus(BaseModel):
 | CrewAI | `CrewAIModule([agent], output_pydantic={"support": OrderStatus})` — or `output_json={...}`; keyed by agent `role` |
 | Google ADK | `LlmAgent(..., output_schema=OrderStatus)` |
 | Smolagents | No schema parameter — have the agent pass a dict or Pydantic instance to `final_answer` |
+| Pydantic AI | `Agent(..., output_type=OrderStatus)` |
+| Claude Agent SDK | `ClaudeAgentOptions(..., output_format={"type": "json_schema", "schema": OrderStatus.model_json_schema()})` |
 
 > **Gotcha (CrewAI):** CrewAI puts the output schema on the `Task`, not the `Agent` — and Agent Kernel builds the task internally per run, so the schema is passed to the `CrewAIModule` constructor keyed by agent role.
 
@@ -372,6 +432,31 @@ triage_agent = ToolCallingAgent(
 )
 ```
 
+**Claude Agent SDK:**
+
+Add the new agent as a native `AgentDefinition` in the triage agent's `ClaudeAgentOptions.agents`. The triage agent
+delegates to it through its `Agent` tool, and Agent Kernel serves any bound tool from the triage agent's session:
+
+```python
+from agentkernel.claude import ClaudeAgentSpec
+from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions
+
+triage_agent = ClaudeAgentSpec(
+    name="triage",
+    description="Routes requests to specialists",
+    options=ClaudeAgentOptions(
+        model="sonnet", system_prompt="Route requests to the right specialist...", tools=[],
+        setting_sources=[], permission_mode="dontAsk", verbatim_prompts=True,
+        agents={
+            "math": AgentDefinition(description="Math questions", prompt="Answer math questions.", tools=[]),
+            "support": AgentDefinition(description="Support questions", prompt="Answer support questions.", tools=[]),  # Add here
+        },
+    ),
+)
+```
+
+> **Gotcha (Claude Agent SDK):** Set `tools=` on every subagent. Omitting `tools` makes the subagent inherit every tool of the session; `tools=[]` gives it no tools. A tool a subagent lists is served from the triage agent's session, so the triage agent can call it too. Subagent steps are not streamed; the subagent's answer arrives as the result of the parent's `Agent` tool call.
+
 ---
 
 ### Step 6: Add Hooks (Optional)
@@ -393,6 +478,30 @@ module = OpenAIModule([triage_agent, math_agent, general_agent, support_agent])
 module.pre_hook(support_agent, [RAGPreHook()])
 ```
 
+**Framework-native run options (optional):** to pass the framework's own run arguments for one agent
+(OpenAI `max_turns`, `hooks=RunHooks()` and `run_config=RunConfig(...)`; LangGraph `config`; ADK
+`plugins` and `run_config`; Pydantic AI `usage_limits`; Microsoft Agent Framework `options`; CrewAI `step_callback`; smolagents
+`max_steps`), declare them with `run_options` on the same module, in the framework's own types:
+
+```python
+from agents import RunConfig
+
+module.run_options(support_agent, max_turns=25, hooks=ProgressHooks(), run_config=RunConfig(...))
+```
+
+Keys the adapter populates itself (`session`, `context`, `input`, ...) raise `ValueError` at
+declaration. See the `ak-add-capabilities` skill for the per-framework destinations.
+
+To compute options per run, give `run_options` a callable before the keywords; it is called with
+`(agent, session, requests)` on every run and its mapping is merged over the static keywords:
+
+```python
+def options_for(agent, session, requests):
+    return {"max_turns": 10} if session.id.startswith("guest") else {}
+
+module.run_options(support_agent, options_for, max_turns=25, hooks=ProgressHooks())
+```
+
 ---
 
 ### Step 7: Update Dependencies (If Needed)
@@ -401,7 +510,7 @@ If the new tool or agent requires additional packages, update `pyproject.toml`:
 
 ```toml
 dependencies = [
-    "agentkernel[openai,api,redis]>=0.9.1",
+    "agentkernel[openai,api,redis]>=0.9.5",
     "httpx>=0.27.0",        # Add any new deps for your tool
 ]
 ```
@@ -463,7 +572,7 @@ curl -X POST http://localhost:8000/run \
 Now that you've added new tools and agents to your project, here are natural next steps:
 
 - **Add more tools & agents** → Use this `ak-build` skill again (it's meant to be used repeatedly)
-- **Add guardrails, tracing, or sessions** → Use the `ak-add-capabilities` skill to add input/output guardrails (OpenAI, Bedrock, Walled AI), observability tracing (Langfuse, OpenLLMetry, Logfire), session persistence (Redis, DynamoDB, Cosmos DB), MCP server, A2A protocol, custom hooks, or multimodal support
+- **Add guardrails, tracing, or sessions** → Use the `ak-add-capabilities` skill to add input/output guardrails (OpenAI, Bedrock, Walled AI), observability tracing (Langfuse, OpenLLMetry, Logfire, CloudWatch), session persistence (Redis, DynamoDB, Cosmos DB), MCP server, A2A protocol, custom hooks, or multimodal support
 - **Connect a messaging platform** → Use the `ak-add-integration` skill to add Slack, WhatsApp, Messenger, Instagram, Telegram, or Gmail
 - **Deploy to cloud** → Use the `ak-cloud-deploy` skill to deploy to AWS Lambda, AWS ECS/Fargate, Azure Functions, or Azure Container Apps with Terraform
 - **Set up testing** → Use the `ak-test` skill to configure test modes (score, llm, fallback), write agent tests, and debug common issues

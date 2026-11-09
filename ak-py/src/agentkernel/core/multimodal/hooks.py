@@ -9,7 +9,6 @@ This module provides a PreHook that:
 """
 
 import logging
-from typing import Optional
 
 import litellm
 
@@ -118,7 +117,7 @@ class MultimodalPreHook(PreHook):
                 return f"File ({mime_type}) - Content not currently visible. Use analyze_attachments to analyze."
 
         except ImportError:
-            self._log.error("LiteLLM not installed. Install with: pip install litellm")
+            self._log.error('LiteLLM not installed. Install with: uv add "agentkernel[multimodal]"')
             return "Attachment (LiteLLM missing)"
         except Exception as e:
             self._log.error(f"Error describing attachment: {e}")
@@ -202,7 +201,7 @@ class MultimodalPreHook(PreHook):
         req: AgentRequestAttachmentRef,
         manager: AttachmentStorageManager,
         config: _MultimodalConfig,
-    ) -> Optional[_AttachmentDescription]:
+    ) -> _AttachmentDescription | None:
         """
         Describe an attachment that is already in storage, referenced only by its id.
 

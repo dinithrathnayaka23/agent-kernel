@@ -1,5 +1,6 @@
 import logging
-from typing import Any, Dict, Optional
+from collections.abc import Callable
+from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
@@ -13,21 +14,39 @@ class Headers(BaseModel):
 class APIGatewayRequestAuthorizerEvent(BaseModel):
     type: str
     methodArn: str
-    resource: Optional[str] = None
-    path: Optional[str] = None
-    httpMethod: Optional[str] = None
+    resource: str | None = None
+    path: str | None = None
+    httpMethod: str | None = None
     headers: Headers
-    pathParameters: Optional[Dict[str, str]] = None
-    stageVariables: Optional[Dict[str, str]] = None
+    pathParameters: dict[str, str] | None = None
+    stageVariables: dict[str, str] | None = None
+
+
+# Given the raw authorizer event, the name of the integration whose route it targets, or None.
+WebhookBypass = Callable[[dict[str, Any]], str | None]
 
 
 class APIGatewayAuthorizer:
-    def __init__(self, validator: AuthValidator):
+    def __init__(self, validator: AuthValidator, bypass: WebhookBypass | None = None):
+        """
+        :param validator: Validates the bearer token of every request the bypass does not claim.
+        :param bypass: Lets messaging-integration routes through without a token, e.g.
+            ``WebhookRouteMatcher.for_integrations("slack")``. Platforms send no bearer token; the
+            adapter's own signature check in the request-handler Lambda authenticates them. It only
+            gets a say with authorizer caching off (``result_ttl_in_seconds = 0``): with a TTL, API
+            Gateway answers a header-less request with 401 before calling this Lambda.
+        """
         self._validator = validator
+        self._bypass = bypass
         self._log = logging.getLogger("ak.deployment.aws.akauthorizer")
 
     def handle(self, event: dict, context: dict = None) -> dict:
         self._log.info(f"Authorizer received event: {event}")
+        # Before _build_request: its required Authorization header would Deny a webhook outright.
+        policy = self._bypass_policy(event)
+        if policy is not None:
+            self._log.info(f"Authorizer return policy: {policy}")
+            return policy
 
         try:
             request: APIGatewayRequestAuthorizerEvent = self._build_request(event)
@@ -62,6 +81,25 @@ class APIGatewayAuthorizer:
         self._log.info(f"Authorizer return policy: {return_policy}")
         return return_policy
 
+    def _bypass_policy(self, event: dict) -> dict | None:
+        """An Allow for a request the bypass recognises, or None to take the normal path.
+
+        The Allow names the exact ``methodArn`` (never a wildcard) and carries no claims. A bypass
+        that raises is logged and falls through to the validator, which fails closed for a request
+        with no token.
+        """
+        if self._bypass is None or not event.get("methodArn"):
+            return None
+        try:
+            matched = self._bypass(event)
+        except Exception:
+            self._log.warning("Authorizer bypass raised; taking the normal authorization path", exc_info=True)
+            return None
+        if not matched:
+            return None
+        principal_id = f"integration:{matched}" if isinstance(matched, str) else "integration"
+        return self._build_policy(principal_id=principal_id, effect="Allow", method_arn=event["methodArn"], context=None)
+
     def _build_request(self, event: dict) -> APIGatewayRequestAuthorizerEvent:
         return APIGatewayRequestAuthorizerEvent.model_validate(event)
 
@@ -72,7 +110,7 @@ class APIGatewayAuthorizer:
             raise ValueError("Bearer token is empty")
         return token
 
-    def _build_policy(self, principal_id: str, effect: str, method_arn: str, context: Dict[str, Any] | None = None):
+    def _build_policy(self, principal_id: str, effect: str, method_arn: str, context: dict[str, Any] | None = None):
         policy = {
             "principalId": principal_id,
             "policyDocument": {

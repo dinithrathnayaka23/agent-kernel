@@ -19,10 +19,8 @@ This is an internal submodule used by the root serverless stack in `state.tf`; t
 module "request_handler" {
   source = "./modules/request-handler"
 
-  product_alias  = "agent-kernel"
-  env_alias      = "dev"
+  prefix         = "agent-kernel-dev-scalable-openai"
   region         = "us-east-1"
-  module_name    = "scalable-openai"
   function_name  = "request-handler"
   function_description = "Public API request handler"
   handler_path   = "app.lambda_handler"
@@ -40,11 +38,9 @@ module "request_handler" {
 
 | Name | Description |
 |------|-------------|
-| `product_alias` | Product alias used in resource names |
-| `env_alias` | Environment alias |
+| `prefix` | Prefix applied to every resource name (e.g. `myapp-dev-chat`) |
 | `region` | AWS region |
 | `module_type` | Runtime type, `python` or `nodejs` |
-| `module_name` | Module name used in resource names |
 | `function_name` | Lambda function name suffix |
 | `function_description` | Lambda function description |
 | `handler_path` | Lambda handler path |
@@ -58,6 +54,7 @@ module "request_handler" {
 | `source_bucket` | S3 bucket used for S3 ZIP deployment |
 | `input_queue_arn` | Input queue ARN used for SQS permissions |
 | `input_queue_url` | Input queue URL injected into the environment |
+| `output_queue_url` | Output queue URL injected into the environment (read by a `WebhookRESTRequestHandler`'s SQS transport; no IAM grant) |
 | `security_group_id` | Shared Lambda security group ID used for VPC networking |
 | `redis_url` | Redis URL injected into the environment |
 | `valkey_url` | Valkey URL injected into the environment |
@@ -91,6 +88,9 @@ The module adds these environment variables when the corresponding inputs are pr
 - `AK_EXECUTION__RESPONSE_STORE__VALKEY__URL`
 - `AK_EXECUTION__RESPONSE_STORE__DYNAMODB__TABLE_NAME`
 - `AK_EXECUTION__QUEUES__INPUT__URL`
+- `AK_EXECUTION__QUEUES__OUTPUT__URL`: set when `output_queue_url` is given. The request handler never
+  sends to the output queue, so no IAM grant comes with it; a `WebhookRESTRequestHandler` needs it
+  because the pipeline SQS transport it builds requires both queue URLs.
 
 ## Outputs
 

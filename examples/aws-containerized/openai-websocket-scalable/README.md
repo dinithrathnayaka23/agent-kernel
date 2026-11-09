@@ -142,10 +142,10 @@ matching `email` is `test1@test.com`/`test2@test.com`.
 
 `config.yaml` sets `execution.mode: async` — the full agent reply is pushed back as one
 `CHAT_RESPONSE` message. See [`openai-stream-queue-mode`](../openai-stream-queue-mode) — the same
-architecture with `execution.mode: stream` instead, which delivers the reply token-by-token as a
-sequence of `STREAM_CHUNK` messages.
+architecture with `execution.message_type: delta` added, which delivers the reply token-by-token as
+a sequence of `STREAM_CHUNK` messages.
 
-There is no REST response store in WebSocket modes — replies are always pushed over the
+There is no REST response store in WebSocket (`async`) mode — replies are always pushed over the
 connection, never polled.
 
 ## Agent Runner Auto Scaling
@@ -172,8 +172,7 @@ details on tuning `backlog_target` and cooldowns.
     export TF_VAR_private_subnet_ids='["subnet-xxx","subnet-yyy"]'
     ```
 
-2. Update `deploy/terraform.tfvars` if you want different naming (`product_alias`, `env_alias`,
-   `module_name`, `region`).
+2. Update `deploy/terraform.tfvars` if you want different naming (`prefix`, `region`).
 
 3. Build and deploy from the `deploy/` directory:
     ```bash

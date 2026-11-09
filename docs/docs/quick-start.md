@@ -11,6 +11,17 @@ Build and run your first AI agent with Agent Kernel in under 5 minutes!
 **Cloud Platforms:** AWS, Azure, GCP (multi-cloud support)
 :::
 
+## Create a Project
+
+Agent Kernel installs into a [uv](https://docs.astral.sh/uv/getting-started/installation/) project. Create one and move into it:
+
+```bash
+uv init --python 3.12 my-agent
+cd my-agent
+```
+
+Run the framework steps below from inside this directory.
+
 ## Choose Your Framework
 
 Agent Kernel supports multiple frameworks. Pick the one you're most comfortable with:
@@ -26,7 +37,7 @@ import TabItem from '@theme/TabItem';
 ### 1. Install
 
 ```bash
-pip install agentkernel[openai]
+uv add "agentkernel[openai]"
 ```
 
 ### 2. Create Your Agent
@@ -67,7 +78,7 @@ export OPENAI_API_KEY=your-api-key-here
 ### 4. Run Your Agent
 
 ```bash
-python my_agent.py
+uv run python my_agent.py
 ```
 
 </TabItem>
@@ -78,7 +89,7 @@ python my_agent.py
 ### 1. Install
 
 ```bash
-pip install agentkernel[crewai]
+uv add "agentkernel[crewai]"
 ```
 
 ### 2. Create Your Agent
@@ -121,7 +132,7 @@ export OPENAI_API_KEY=your-api-key-here
 ### 4. Run Your Agent
 
 ```bash
-python my_agent.py
+uv run python my_agent.py
 ```
 
 </TabItem>
@@ -132,7 +143,7 @@ python my_agent.py
 ### 1. Install
 
 ```bash
-pip install agentkernel[langgraph]
+uv add "agentkernel[langgraph]"
 ```
 
 ### 2. Create Your Agent
@@ -182,7 +193,7 @@ export OPENAI_API_KEY=your-api-key-here
 ### 4. Run Your Agent
 
 ```bash
-python my_agent.py
+uv run python my_agent.py
 ```
 
 </TabItem>
@@ -193,7 +204,7 @@ python my_agent.py
 ### 1. Install
 
 ```bash
-pip install agentkernel[adk]
+uv add "agentkernel[adk]"
 ```
 
 ### 2. Create Your Agent
@@ -228,7 +239,7 @@ export GOOGLE_API_KEY=your-api-key-here
 ### 4. Run Your Agent
 
 ```bash
-python my_agent.py
+uv run python my_agent.py
 ```
 
 </TabItem>
@@ -239,7 +250,7 @@ python my_agent.py
 ### 1. Install
 
 ```bash
-pip install agentkernel[smolagents]
+uv add "agentkernel[smolagents]"
 ```
 
 ### 2. Create Your Agent
@@ -276,7 +287,7 @@ export OPENAI_API_KEY=your-api-key-here
 ### 4. Run Your Agent
 
 ```bash
-python my_agent.py
+uv run python my_agent.py
 ```
 
 </TabItem>
@@ -287,11 +298,11 @@ python my_agent.py
 ### 1. Install
 
 ```bash
-pip install agentkernel[pydanticai]
+uv add "agentkernel[pydanticai]"
 ```
 
 `agentkernel[pydanticai]` installs the provider-agnostic `pydantic-ai-slim` core only. Install the
-provider you intend to use, e.g. `pip install "pydantic-ai-slim[openai]"`.
+provider you intend to use, e.g. `uv add "pydantic-ai-slim[openai]"`.
 
 ### 2. Create Your Agent
 
@@ -326,7 +337,110 @@ export OPENAI_API_KEY=your-api-key-here
 ### 4. Run Your Agent
 
 ```bash
-python my_agent.py
+uv run python my_agent.py
+```
+
+</TabItem>
+<TabItem value="maf" label="Microsoft Agent Framework">
+
+## Microsoft Agent Framework Quick Start
+
+### 1. Install
+
+```bash
+uv add "agentkernel[maf]" agent-framework-openai
+```
+
+`agentkernel[maf]` installs the provider-agnostic `agent-framework-core` only. Install the MAF package for
+the model provider you intend to use, e.g. `agent-framework-openai`.
+
+### 2. Create Your Agent
+
+Create a file called `my_agent.py`:
+
+```python
+from agent_framework import Agent
+from agent_framework.openai import OpenAIChatClient
+from agentkernel.cli import CLI
+from agentkernel.maf import MAFModule
+
+# Define your agent
+assistant = Agent(
+    OpenAIChatClient(model="gpt-4.1-mini"),
+    name="assistant",              # required — AK registers agents by name eagerly
+    description="A helpful AI assistant.",
+    instructions="You are a helpful AI assistant. Provide concise and accurate answers.",
+)
+
+# Register with Agent Kernel
+MAFModule([assistant])
+
+if __name__ == "__main__":
+    CLI.main()
+```
+
+### 3. Set API Key
+
+```bash
+export OPENAI_API_KEY=your-api-key-here
+```
+
+### 4. Run Your Agent
+
+```bash
+uv run python my_agent.py
+```
+
+</TabItem>
+<TabItem value="claude" label="Claude Agent SDK">
+
+## Claude Agent SDK Quick Start
+
+### 1. Install
+
+```bash
+uv add "agentkernel[claude]"
+```
+
+### 2. Create Your Agent
+
+Create a file called `my_agent.py`:
+
+```python
+from claude_agent_sdk import ClaudeAgentOptions
+from agentkernel.claude import ClaudeAgentSpec, ClaudeModule
+from agentkernel.cli import CLI
+
+# Define your agent
+assistant = ClaudeAgentSpec(
+    name="assistant",
+    description="A helpful AI assistant.",
+    options=ClaudeAgentOptions(
+        model="sonnet",
+        system_prompt="You are a helpful AI assistant. Provide concise and accurate answers.",
+        tools=[],                   # no built-in Claude Code tools (Bash, file edits, ...)
+        setting_sources=[],         # ignore ~/.claude settings
+        permission_mode="dontAsk",  # deny any tool call that is not explicitly approved
+    ),
+)
+
+# Register with Agent Kernel
+ClaudeModule([assistant])
+
+if __name__ == "__main__":
+    CLI.main()
+```
+
+### 3. Set API Key
+
+```bash
+export ANTHROPIC_API_KEY=your-api-key-here
+```
+
+### 4. Run Your Agent
+
+```bash
+uv run python my_agent.py
 ```
 
 </TabItem>
@@ -409,7 +523,7 @@ Run your agent as a REST API server:
 
 ```bash
 # Install API dependencies
-pip install agentkernel[api]
+uv add "agentkernel[api]"
 ```
 Use the RESTAPI module run the agents
 
@@ -442,7 +556,7 @@ Run the agents
 
 ```bash
 # Run as API server
-python my_agent.py
+uv run python my_agent.py
 ```
 
 Configure the API port by editing `config.yaml`
@@ -466,7 +580,7 @@ Package and deploy to AWS Lambda:
 
 ```bash
 # Install AWS dependencies
-pip install agentkernel[aws]
+uv add "agentkernel[aws]"
 ```
 Use the Lambda module to run the agents
 
@@ -509,7 +623,8 @@ terraform {
     required_providers {
         aws = {
             source  = "hashicorp/aws"
-            version = ">= 6.11.0"
+            # Pinned; 6.69.0 fails to create zip-packaged Lambdas (https://github.com/hashicorp/terraform-provider-aws/issues/50474)
+            version = "6.70.0"
         }
         docker = {
             source  = "kreuzwerker/docker"
@@ -549,9 +664,7 @@ module "serverless_agents" {
     version   = "0.8.1"
     providers = { aws = aws, docker = docker }
 
-    product_alias        = "ak"
-    env_alias            = "dev"
-    module_name          = "quickstart"
+    prefix               = "ak-dev-quickstart"
     region               = var.region
     product_display_name = "AK Quick Start"
 
@@ -559,7 +672,6 @@ module "serverless_agents" {
         function_name       = "ak-quickstart"
         function_description = "Agent Kernel Quick Start Lambda"
         handler_path        = "lambda.handler"
-        module_name         = "quickstart"
         package_path        = "../dist"
         package_type        = "Image"
         memory_size         = 256
@@ -606,7 +718,9 @@ export AK_SESSION__TYPE=dynamodb
 export AK_SESSION__DYNAMODB__TABLE_NAME=agent-kernel-sessions
 ```
 
-See [session configuration](./core-concepts/configuration.md#session-storage) for more details.
+Other persistent backends follow the same pattern: `valkey`, `cosmosdb` (Azure), and `firestore` (GCP).
+
+See [Choosing a Memory Backend](./core-concepts/memory-backends.md) for a comparison and recommended setup, or [session configuration](./core-concepts/configuration.md#session-storage) for every field.
 
 ## Common Patterns
 
@@ -660,7 +774,7 @@ export GOOGLE_API_KEY=...
 Install the correct extras package:
 
 ```bash
-pip install agentkernel[your-framework]
+uv add "agentkernel[your-framework]"
 ```
 
 ## Learn More

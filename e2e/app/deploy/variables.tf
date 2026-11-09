@@ -4,19 +4,9 @@ variable "region" {
   default     = "us-east-2"
 }
 
-variable "product_alias" {
+variable "prefix" {
   type        = string
-  description = "Product alias"
-}
-
-variable "env_alias" {
-  type        = string
-  description = "Environment alias"
-}
-
-variable "module_name" {
-  type        = string
-  description = "module name"
+  description = "Prefix applied to every resource name"
 }
 
 variable "is_production" {
@@ -26,13 +16,13 @@ variable "is_production" {
 }
 
 variable "vpc_id" {
-  description = "VPC ID for ECS deployment. If null, a new VPC is created"
+  description = "VPC ID for ECS deployment. If null, the weekly integration base deployment's VPC is reused"
   type        = string
   default     = null
 }
 
 variable "private_subnet_ids" {
-  description = "List of private subnet IDs for ECS deployment (required when vpc_id is set)"
+  description = "Private subnet IDs for ECS deployment. If null, the base deployment's private subnets are reused"
   type        = list(string)
   default     = null
 }

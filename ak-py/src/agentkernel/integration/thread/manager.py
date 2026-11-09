@@ -7,14 +7,14 @@ agent runs. A single shared instance is used by ChatService and ThreadRouter.
 """
 
 import logging
-import sys
 from threading import RLock
-from typing import List, Optional
+from typing import Optional
 
 from ...core.config import AKConfig
-from ...core.model import AgentRequest, AgentRequestAttachmentRef, AgentRequestFile, AgentRequestImage
-from ...core.multimodal.source import AttachmentSource
+from ...core.model import AgentRequest
+from ...core.multimodal.storage import AttachmentStorageManager
 from ...core.util.pagination import clamp_limit, decode_cursor, encode_cursor
+from ...core.util.payload import JSONPayload
 from .model import MessagePage, Thread, ThreadAttachment, ThreadMessage, ThreadPage
 from .naming import ThreadNamingStrategy
 from .store import ThreadStore, ThreadStoreBuilder
@@ -30,11 +30,11 @@ class ConversationThreadManager:
     """
 
     _instance: Optional["ConversationThreadManager"] = None
-    _naming_strategy: Optional[ThreadNamingStrategy] = None
+    _naming_strategy: ThreadNamingStrategy | None = None
     _lock: RLock = RLock()
     _log = logging.getLogger("ak.thread.manager")
 
-    def __init__(self, store: ThreadStore, naming_strategy: Optional[ThreadNamingStrategy] = None):
+    def __init__(self, store: ThreadStore, naming_strategy: ThreadNamingStrategy | None = None):
         """
         Initializes a ConversationThreadManager instance.
         :param store: The ThreadStore backend to persist threads in.
@@ -86,9 +86,9 @@ class ConversationThreadManager:
         self,
         session_id: str,
         user_id: str,
-        group_id: Optional[str] = None,
-        name: Optional[str] = None,
-        first_prompt: Optional[str] = None,
+        group_id: str | None = None,
+        name: str | None = None,
+        first_prompt: str | None = None,
     ) -> Thread:
         """
         Load the thread for a session_id, creating it on the session's first request.
@@ -127,22 +127,24 @@ class ConversationThreadManager:
         self,
         session_id: str,
         role: str,
-        content: str,
-        attachments: Optional[List[ThreadAttachment]] = None,
+        content: str | JSONPayload,
+        attachments: list[ThreadAttachment] | None = None,
+        media_type: str | None = None,
     ) -> ThreadMessage:
         """
         Append a message to the thread for a session_id.
         :param session_id: Unique identifier for the thread.
         :param role: Message role — "user" or "assistant".
-        :param content: Message text content.
+        :param content: Message text content, or the payload object when media_type is set.
         :param attachments: Optional attachment references for the message.
+        :param media_type: The payload's format when the reply carried one; None for text.
         :return: The appended message.
         """
-        message = ThreadMessage(role=role, content=content, attachments=attachments or [])
+        message = ThreadMessage(role=role, content=content, media_type=media_type, attachments=attachments or [])
         self._store.append_message(session_id, message)
         return message
 
-    def store_attachments(self, session_id: str, requests: List[AgentRequest]) -> tuple[List[AgentRequest], List[ThreadAttachment]]:
+    def store_attachments(self, session_id: str, requests: list[AgentRequest]) -> tuple[list[AgentRequest], list[ThreadAttachment]]:
         """
         Save each image/file request into the multimodal AttachmentStore and return the
         rebuilt request list plus one ThreadAttachment per attachment the turn carried.
@@ -164,53 +166,27 @@ class ConversationThreadManager:
         :param requests: The incoming agent requests to scan for attachments.
         :return: A tuple of (rebuilt requests, ThreadAttachment references).
         :raises ValueError: If the requests carry attachments while multimodal is disabled, or
-                            multimodal.storage_type is session_cache (thread mode needs a shared store).
+                            while multimodal.storage_type is session_cache (storing one needs a
+                            shared store). A turn with no attachments is never rejected.
         """
-        if not AKConfig.get().multimodal.enabled:
-            if any(
-                (isinstance(req, AgentRequestImage) and req.image_data) or (isinstance(req, AgentRequestFile) and req.file_data) for req in requests
-            ):
-                raise ValueError(
-                    "Attachments are not supported when thread support is enabled without multimodal support — "
-                    "set multimodal.enabled: true in config.yaml to accept images and files"
-                )
-            return requests, []
-        if AKConfig.get().multimodal.storage_type == "session_cache":
-            # This runs outside the session context, so session_cache writes land in a
+        rebuilt, stored = AttachmentStorageManager.offload(
+            session_id,
+            requests,
+            attachments_disabled_error=(
+                "Attachments are not supported when thread support is enabled without multimodal support — "
+                "set multimodal.enabled: true in config.yaml to accept images and files"
+            ),
+            # session_cache runs outside the session context here, so its writes land in a
             # session copy that distributed session stores never persist — silent loss.
-            raise ValueError(
+            session_cache_error=(
                 "multimodal.storage_type 'session_cache' is not supported when thread support is enabled — "
                 "use a shared attachment store (in_memory, redis, or dynamodb) in config.yaml"
-            )
-
-        from ...core.multimodal.storage import AttachmentStorageManager
-
-        manager = AttachmentStorageManager(session_id=session_id)
-        rebuilt: List[AgentRequest] = []
-        references: List[ThreadAttachment] = []
-        for req in requests:
-            extracted = AttachmentSource.extract(req)
-            if extracted is None:
-                rebuilt.append(req)
-                continue
-            is_reference = not extracted.is_base64
-            attachment_id = manager.save_attachment(
-                data="" if is_reference else extracted.data,
-                attachment_type=extracted.att_type,
-                name=extracted.name,
-                mime_type=extracted.mime_type,
-                max_attachments=sys.maxsize,  # thread attachments are exempt from eviction
-                url=extracted.data if is_reference else None,
-            )
-            references.append(ThreadAttachment(attachment_id=attachment_id, name=extracted.name, mime_type=extracted.mime_type))
-            if is_reference:
-                rebuilt.append(req)
-            else:
-                rebuilt.append(AgentRequestAttachmentRef(attachment_id=attachment_id))
-            self._log.debug(f"Stored thread attachment {attachment_id} ({extracted.name}) for session {session_id}")
+            ),
+        )
+        references = [ThreadAttachment(attachment_id=a.attachment_id, name=a.name, mime_type=a.mime_type) for a in stored]
         return rebuilt, references
 
-    def get_thread(self, session_id: str, user_id: Optional[str] = None) -> Optional[Thread]:
+    def get_thread(self, session_id: str, user_id: str | None = None) -> Thread | None:
         """
         Load a thread's metadata by session_id, optionally enforcing ownership.
         Messages are fetched separately and paginated via get_messages.
@@ -227,7 +203,7 @@ class ConversationThreadManager:
             raise PermissionError(f"Thread {session_id} is not owned by user {user_id}")
         return thread
 
-    def get_messages(self, session_id: str, limit: Optional[int] = None, cursor: Optional[str] = None) -> MessagePage:
+    def get_messages(self, session_id: str, limit: int | None = None, cursor: str | None = None) -> MessagePage:
         """
         Return a page of a thread's messages in chronological order.
         :param session_id: Unique identifier for the thread.
@@ -243,10 +219,10 @@ class ConversationThreadManager:
 
     def list_threads(
         self,
-        user_id: Optional[str] = None,
-        group_id: Optional[str] = None,
-        limit: Optional[int] = None,
-        cursor: Optional[str] = None,
+        user_id: str | None = None,
+        group_id: str | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
     ) -> ThreadPage:
         """
         List threads filtered by user_id and/or group_id (metadata only), paginated.

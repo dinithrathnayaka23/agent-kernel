@@ -1,13 +1,11 @@
-# OpenAI Agents over WebSocket, stream mode, no queue — agent runs inline
+# OpenAI Agents over WebSocket, async + delta (token streaming), no queue — agent runs inline
 module "containerized_agents" {
   source  = "yaalalabs/ak-containerized/aws"
-  version = "0.9.1"
+  version = "0.9.5"
 
   providers = { aws = aws, docker = docker }
 
-  product_alias        = var.product_alias
-  env_alias            = var.env_alias
-  module_name          = var.module_name
+  prefix               = var.prefix
   container_type       = "ecs"
   region               = var.region
   vpc_id               = var.vpc_id
@@ -26,7 +24,8 @@ module "containerized_agents" {
 
   # WebSocket without a queue: REST service handles connect/disconnect and runs the agent inline.
   queue_mode     = false
-  execution_mode = "stream" # "async" (full reply) | "stream" (token-by-token)
+  execution_mode = "async"
+  message_type   = "delta" # "complete" (full reply) | "delta" (token-by-token)
   ws_chat_route  = "chat"
 
   # Custom routes beyond chat — registered via @AWSWebsocketAPI.register(...) in app.py.
@@ -36,7 +35,7 @@ module "containerized_agents" {
   ]
 
   tags = {
-    Example     = "openai-stream"
-    Environment = var.env_alias
+    Example    = "openai-stream"
+    Deployment = var.prefix
   }
 }

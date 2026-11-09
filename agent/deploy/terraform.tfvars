@@ -1,4 +1,3 @@
-region        = "ap-southeast-1"
-product_alias = "ak-agent"
-env_alias     = "pubic"
-module_name   = "rag"
+region = "us-east-2"
+prefix = "ak-agent-pubic-rag"
+langfuse_base_url = "https://us.cloud.langfuse.com"

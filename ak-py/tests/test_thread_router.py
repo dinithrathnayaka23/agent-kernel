@@ -1,5 +1,3 @@
-from typing import Optional
-
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -8,6 +6,8 @@ from agentkernel.auth import Authoriser
 from agentkernel.core.config import AKConfig, _ThreadStoreConfig
 from agentkernel.integration.thread import ConversationThreadManager, ThreadNamingStrategy, ThreadRESTRequestHandler
 from agentkernel.integration.thread.store.in_memory import InMemoryThreadStore
+
+MEDIA_TYPE = "application/a2ui+json"
 
 
 class EchoNaming(ThreadNamingStrategy):
@@ -35,11 +35,11 @@ def thread_enabled():
 class StaticAuthoriser(Authoriser):
     """Test authoriser: token 'good-token' resolves to user 'u1', anything else is rejected."""
 
-    def authorise(self, token: str) -> Optional[str]:
+    def authorise(self, token: str) -> str | None:
         return "u1" if token == "good-token" else None
 
 
-def _client(authoriser: Optional[Authoriser] = None) -> TestClient:
+def _client(authoriser: Authoriser | None = None) -> TestClient:
     app = FastAPI()
     app.include_router(ThreadRESTRequestHandler(authoriser=authoriser).get_router())
     return TestClient(app)
@@ -76,6 +76,22 @@ class TestThreadRouterOpen:
         body = response.json()
         assert body["session_id"] == "s1"
         assert [m["content"] for m in body["messages"]] == ["hello", "hi!"]
+
+    def test_get_thread_carries_a_labelled_payload_as_an_object(self, thread_enabled):
+        """The read route's half of #763, asserted where the route is tested.
+
+        The unlabelled message is beside it on purpose: ``media_type`` is omitted rather than sent
+        as ``null``, which is what keeps the key absent for anyone who never opted into A2UI.
+        """
+        thread_enabled.get_or_create_thread("s1", "u1", first_prompt="a")
+        thread_enabled.append_message("s1", "assistant", {"version": "v1.0"}, media_type=MEDIA_TYPE)
+        thread_enabled.append_message("s1", "assistant", "plain words")
+
+        messages = _client().get("/api/v1/threads/s1").json()["messages"]
+
+        assert (messages[0]["content"], messages[0]["media_type"]) == ({"version": "v1.0"}, MEDIA_TYPE)
+        assert messages[1]["content"] == "plain words"
+        assert "media_type" not in messages[1]
 
     def test_get_missing_thread_404(self, thread_enabled):
         response = _client().get("/api/v1/threads/missing")
